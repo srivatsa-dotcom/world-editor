@@ -1,0 +1,876 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gazebo World Editor</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#e6e8eb;background:#1b1e23}
+#app{display:grid;grid-template-columns:240px 1fr 320px;grid-template-rows:46px 1fr;height:100vh}
+#top{grid-column:1/4;display:flex;align-items:center;gap:6px;padding:0 10px;background:#23272e;border-bottom:1px solid #333a44;overflow-x:auto}
+#left,#right{background:#21252b;overflow:auto;padding:10px}
+#left{border-right:1px solid #333a44}#right{border-left:1px solid #333a44}
+#view{position:relative;overflow:hidden}
+button{background:#2f3540;color:#e6e8eb;border:1px solid #434b58;border-radius:6px;padding:5px 9px;cursor:pointer;font:inherit;white-space:nowrap}
+button:hover{background:#38404c}button.on{background:#2d5b8a;border-color:#3d76b0}button:disabled{opacity:.4;cursor:default}
+button.primary{background:#2d5b8a;border-color:#3d76b0}
+input,textarea{background:#16191d;color:#e6e8eb;border:1px solid #3a414c;border-radius:5px;padding:4px 6px;font:inherit;width:100%}
+input[type=checkbox]{width:auto;vertical-align:middle}
+input[type=color]{padding:0;height:26px;width:44px;flex:none}
+.title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:22vw}
+.sp{flex:1}.sep{width:1px;height:22px;background:#3a414c;margin:0 2px;flex:none}
+.pill{padding:3px 10px;border-radius:999px;font-size:12px;background:#24402a;color:#9fe39f;white-space:nowrap}
+.pill.dirty{background:#4a3b1f;color:#ffd27a}.pill.err{background:#4a2323;color:#ff9c9c}.pill.idle{background:#2f3540;color:#b9c2cf}
+h4{margin:14px 0 6px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8d96a3}
+.item{padding:5px 7px;border-radius:5px;cursor:pointer;display:flex;gap:6px;align-items:center;white-space:nowrap;overflow:hidden}
+.item:hover{background:#2a2f37}.item.sel{background:#2d5b8a}
+.item span:last-child{overflow:hidden;text-overflow:ellipsis}
+.k{font-size:10px;padding:1px 5px;border-radius:4px;background:#39414d;color:#b9c2cf;flex:none}
+.row{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:5px}
+label.f{display:block;font-size:11px;color:#8d96a3;margin-bottom:2px}
+.vis{border:1px solid #333a44;border-radius:7px;padding:8px;margin-bottom:8px}
+.btns{display:flex;gap:6px;flex-wrap:wrap}
+textarea{min-height:280px;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre;margin-top:6px}
+#toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);background:#0d0f12;color:#fff;padding:8px 14px;border-radius:8px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:80%;z-index:5}
+.muted{color:#8d96a3}.warn{color:#ffd27a;font-size:12px;margin-top:4px;word-break:break-all}
+label{white-space:nowrap}
+#empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#1b1e23;z-index:3}
+.drop{border:2px dashed #4a5361;border-radius:16px;padding:40px 48px;text-align:center;max-width:620px}
+.drop h2{margin:0 0 6px;font-size:20px}.drop p{margin:6px 0 18px}
+#dragcover{position:absolute;inset:0;border:3px dashed #3d76b0;background:rgba(45,91,138,.25);display:none;align-items:center;justify-content:center;font-size:18px;z-index:4;pointer-events:none}
+body.dragging #dragcover{display:flex}
+code{background:#16191d;padding:1px 4px;border-radius:4px}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="app">
+ <div id="top">
+  <button id="bOpen" title="Open a .world / .sdf file">Open world</button>
+  <button id="bFolder" title="Add your workspace or models folder so model:// and package:// meshes can be shown">Add models folder</button>
+  <span class="sep"></span>
+  <span class="title" id="file">No file</span><span class="pill idle" id="status">Drop a world file</span>
+  <span class="sp"></span>
+  <button id="bMove" class="on" title="Move (W)">Move</button><button id="bRot" title="Rotate (E)">Rotate</button>
+  <button id="bSpace" title="Gizmo axes: world or local">World axes</button>
+  <label title="Snap 0.1 m / 15°"><input type="checkbox" id="snap"> Snap</label>
+  <span class="sep"></span>
+  <button id="bUndo" title="Undo (Ctrl+Z)">Undo</button><button id="bRedo" title="Redo (Ctrl+Y)">Redo</button>
+  <label title="Write every edit straight into the world file"><input type="checkbox" id="auto" checked> Live save</label>
+  <button id="bSave" title="Save (Ctrl+S)">Save</button><button id="bSaveAs">Save as…</button><button id="bDownload">Download</button>
+ </div>
+ <div id="left">
+  <h4>Add</h4><div class="btns"><button data-add="box">+ Box</button><button data-add="cylinder">+ Cylinder</button><button data-add="sphere">+ Sphere</button></div>
+  <h4>World</h4><input id="filter" placeholder="Filter…"><div id="list" style="margin-top:6px"></div>
+  <div id="worlds"></div>
+  <div id="folders"></div>
+  <div id="warns"></div>
+ </div>
+ <div id="view">
+  <div id="toast"></div>
+  <div id="dragcover">Drop world file (.world / .sdf) or a models / workspace folder</div>
+  <div id="empty"><div class="drop">
+    <h2>Drop your Gazebo world here</h2>
+    <p class="muted">A <code>.world</code> or <code>.sdf</code> file. You can also drop your workspace or models folder so meshes and <code>model://</code> includes show up.</p>
+    <div class="btns" style="justify-content:center">
+      <button class="primary" id="eOpen">Open world file</button>
+      <button id="eFolder">Open folder</button>
+      <button id="eNew">New blank world</button>
+      <button id="ePaste">Paste XML</button>
+    </div>
+    <div id="emptyMsg"></div>
+    <p class="muted" style="margin:18px 0 0;font-size:12px">Chrome or Edge saves straight back into your file. Other browsers use Download.</p>
+  </div></div>
+ </div>
+ <div id="right"><div id="props"></div></div>
+</div>
+<input type="file" id="fileInput" accept=".world,.sdf,.xml" hidden>
+<input type="file" id="dirInput" webkitdirectory hidden>
+
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {TransformControls} from 'three/addons/controls/TransformControls.js';
+import {STLLoader} from 'three/addons/loaders/STLLoader.js';
+import {ColladaLoader} from 'three/addons/loaders/ColladaLoader.js';
+import {OBJLoader} from 'three/addons/loaders/OBJLoader.js';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const D2R = Math.PI/180, R2D = 180/Math.PI;
+const r4 = v => Number.isFinite(v) ? Math.round(v*1e4)/1e4 : 0;
+const fmt = v => { let s = Number(v).toFixed(6).replace(/\.?0+$/, ''); return (s === '-0' || s === '') ? '0' : s; };
+const fmtList = a => a.map(fmt).join(' ');
+const FS_API = 'showOpenFilePicker' in window;
+
+// =====================================================================  path + folder index
+const norm = p => { const o = []; for (const s of String(p).replace(/\\/g, '/').split('/')) { if (!s || s === '.') continue; if (s === '..') o.pop(); else o.push(s); } return o.join('/'); };
+const dirname = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+const join = (a, b) => norm(a ? a + '/' + b : b);
+const SKIP = new Set(['build', 'log', 'node_modules', '__pycache__', '.git']);
+const IX = { files: new Map(), lower: new Map(), handles: new Map(), modelDirs: new Map(), pkgDirs: new Map(), worlds: [], roots: [], pkgXml: [] };
+const suffixCache = new Map();
+
+function addFile(path, getFile, handle) {
+  IX.files.set(path, getFile); IX.lower.set(path.toLowerCase(), path);
+  if (handle) IX.handles.set(path, handle);
+  const base = path.split('/').pop().toLowerCase();
+  if (base === 'model.config') {
+    const d = dirname(path); const segs = d.split('/');
+    let name = segs.pop(); if (/^\d+$/.test(name) && segs.length) name = segs.pop(); // fuel cache: <name>/<version>/
+    if (!IX.modelDirs.has(name.toLowerCase())) IX.modelDirs.set(name.toLowerCase(), d);
+  }
+  if (base === 'package.xml') IX.pkgXml.push(path);
+  if (/\.(world|sdf)$/i.test(base) && base !== 'model.sdf') IX.worlds.push(path);
+}
+async function walk(dir, prefix, depth, cnt) {
+  for await (const [name, h] of dir.entries()) {
+    if (cnt.n > 100000) return;
+    if (name.startsWith('.') || SKIP.has(name)) continue;
+    const p = prefix + '/' + name;
+    if (h.kind === 'file') { cnt.n++; addFile(p, () => h.getFile(), h); }
+    else if (depth < 14) await walk(h, p, depth + 1, cnt);
+  }
+}
+async function finishIndex(rootName) {
+  for (const px of IX.pkgXml.splice(0)) {
+    try { const m = (await readText(px)).match(/<name>\s*([^<\s]+)\s*<\/name>/); if (m) { const d = dirname(px); if (!IX.pkgDirs.has(m[1]) || d.includes('/src/')) IX.pkgDirs.set(m[1], d); } } catch {}
+  }
+  IX.roots.push(rootName); suffixCache.clear(); modelCache.clear(); textCache.clear();
+  renderSide();
+}
+async function addFolderHandle(dh) {
+  setStatus('Indexing folder…', 'dirty');
+  const cnt = { n: 0 }; await walk(dh, dh.name, 0, cnt); await finishIndex(dh.name);
+  toast(`Indexed ${cnt.n} files from “${dh.name}” (${IX.modelDirs.size} models, ${IX.pkgDirs.size} packages)`);
+  await afterFolder();
+}
+async function addFolderFiles(files) {
+  let root = '';
+  for (const f of files) { if (SKIP.has(f.webkitRelativePath.split('/')[1])) continue; addFile(norm(f.webkitRelativePath), async () => f); root = root || f.webkitRelativePath.split('/')[0]; }
+  await finishIndex(root || 'folder');
+  toast(`Indexed ${files.length} files (${IX.modelDirs.size} models, ${IX.pkgDirs.size} packages)`);
+  await afterFolder();
+}
+async function afterFolder() {
+  if (doc) { if (!worldPath) linkWorldPath(); refresh(); updateStatus(); }
+  else if (IX.worlds.length === 1) openIndexedWorld(IX.worlds[0]);
+  else if (IX.worlds.length) { $('#empty').style.display = 'none'; setStatus('Pick a world on the left', 'idle'); renderSide(); }
+  else updateStatus();
+}
+function linkWorldPath() { // find the open world inside the indexed folder so relative paths resolve
+  const hits = IX.worlds.filter(p => p.split('/').pop() === fileName);
+  if (hits.length === 1) { worldPath = hits[0]; worldDir = dirname(hits[0]); }
+}
+const lookup = p => IX.files.has(p) ? p : (IX.lower.get(String(p).toLowerCase()) || null);
+function suffixLookup(raw) {
+  const segs = norm(raw).split('/').filter(Boolean); if (!segs.length) return null;
+  const key = segs.join('/').toLowerCase(); if (suffixCache.has(key)) return suffixCache.get(key);
+  let found = null;
+  for (let k = Math.min(5, segs.length); k >= Math.min(2, segs.length) && !found; k--) {
+    const suf = '/' + segs.slice(-k).join('/').toLowerCase();
+    for (const [low, real] of IX.lower) if (low.endsWith(suf)) { found = real; break; }
+  }
+  suffixCache.set(key, found); return found;
+}
+const textCache = new Map();
+function readText(p) { if (!textCache.has(p)) textCache.set(p, IX.files.get(p)().then(f => f.text())); return textCache.get(p); }
+async function readBuf(p) { return (await IX.files.get(p)()).arrayBuffer(); }
+
+function modelDirFor(uri) {
+  if (uri.startsWith('model://')) {
+    const [name, ...rest] = uri.slice(8).split('/');
+    const d = IX.modelDirs.get(name.toLowerCase()); return d ? { dir: d, rest: rest.join('/') } : null;
+  }
+  const m = decodeURIComponent(uri).match(/^https?:\/\/[^/]+\/(?:[\d.]+\/)?[^/]+\/models\/([^/]+)(?:\/(?:\d+|tip))?(?:\/files\/(.*))?/i);
+  if (m) { const n = m[1].toLowerCase(); const d = IX.modelDirs.get(n) || IX.modelDirs.get(n.replace(/ /g, '_')); return d ? { dir: d, rest: m[2] || '' } : null; }
+  const raw = uri.replace(/^file:\/\//, '');
+  const cand = (worldDir != null && !/^([a-zA-Z]:)?[\/\\]/.test(raw)) ? join(worldDir, raw) : null;
+  for (const c of [cand, suffixLookup(raw + '/model.config') && dirname(suffixLookup(raw + '/model.config'))]) if (c && lookup(join(c, 'model.config'))) return { dir: c, rest: '' };
+  const f = cand && lookup(cand) ? lookup(cand) : suffixLookup(raw);
+  return f ? { dir: dirname(f), rest: f.split('/').pop() } : null;
+}
+function resolveFile(uri, baseDir) {
+  let p = null;
+  if (uri.startsWith('model://') || /^https?:/i.test(uri)) { const r = modelDirFor(uri); if (r) p = join(r.dir, r.rest); }
+  else if (uri.startsWith('package://')) {
+    const [pkg, ...rest] = uri.slice(10).split('/'); const d = IX.pkgDirs.get(pkg);
+    if (d) p = join(d, rest.join('/'));
+    if (!p || !lookup(p)) p = suffixLookup(pkg + '/' + rest.join('/'));
+  } else {
+    const raw = uri.replace(/^file:\/\//, '');
+    if (baseDir != null && !/^([a-zA-Z]:)?[\/\\]/.test(raw)) p = join(baseDir, raw);
+    if (!p || !lookup(p)) p = suffixLookup(raw);
+  }
+  return p ? lookup(p) : null;
+}
+const modelCache = new Map();
+function loadModel(uri) {
+  if (!modelCache.has(uri)) modelCache.set(uri, (async () => {
+    const r = modelDirFor(uri); if (!r) return null;
+    let file = r.rest && lookup(join(r.dir, r.rest)) && /\.(sdf|xml|urdf)$/i.test(r.rest) ? lookup(join(r.dir, r.rest)) : null;
+    if (!file) {
+      const cfg = lookup(join(r.dir, 'model.config'));
+      if (cfg) try {
+        const x = parseXml(await readText(cfg));
+        const ver = e => (e.getAttribute('version') || '0').split('.').map(Number);
+        const sdfs = [...x.getElementsByTagName('sdf')].sort((a, b) => { const A = ver(a), B = ver(b); return (B[0] - A[0]) || ((B[1] || 0) - (A[1] || 0)); });
+        for (const s of sdfs) { const f = lookup(join(r.dir, s.textContent.trim())); if (f) { file = f; break; } }
+      } catch {}
+      file = file || lookup(join(r.dir, 'model.sdf'));
+    }
+    if (!file) return null;
+    try { return { dir: r.dir, root: parseXml(await readText(file)).documentElement }; } catch (e) { warnings.push(`Could not parse ${file}: ${e.message}`); return null; }
+  })());
+  return modelCache.get(uri);
+}
+
+// =====================================================================  XML document
+let doc = null, decl = '', fileName = '', fileHandle = null, worldPath = null, worldDir = null;
+let dirty = false, liveSave = true, lastMod = 0, saving = Promise.resolve();
+let undo = [], redo = [];
+
+function parseXml(text) {
+  const d = new DOMParser().parseFromString(text, 'application/xml');
+  const err = d.getElementsByTagName('parsererror')[0];
+  if (err) { const t = err.textContent || ''; const m = t.match(/error on line[^\n]*?(?=Below|$)/i); throw new Error(m ? m[0].trim() : 'XML parse error'); }
+  return d;
+}
+function serialize() {
+  const s = new XMLSerializer();
+  return (decl ? decl + '\n' : '') + [...doc.childNodes].map(n => s.serializeToString(n)).join('\n') + '\n';
+}
+const container = () => { const r = doc.documentElement; if (r.tagName === 'world') return r; return kid(r, 'world') || r; };
+const kids = el => [...el.children];
+const kid = (el, tag) => kids(el).find(c => c.tagName === tag) || null;
+const kidsOf = (el, tag) => kids(el).filter(c => c.tagName === tag);
+const txt = (el, tag, def = null) => { const c = el && kid(el, tag); const t = c && c.textContent.trim(); return t ? t : def; };
+const nums = (s, n, def) => { if (s == null) return def; const v = s.trim().split(/\s+/).map(Number); if (v.some(x => !Number.isFinite(x)) || (n && v.length < n)) return def; return n ? v.slice(0, n) : v; };
+const num = (s, def) => { const v = parseFloat(s); return Number.isFinite(v) ? v : def; };
+const mk = tag => doc.createElement(tag);
+const depthOf = el => { let d = 0; while (el && el !== doc.documentElement) { el = el.parentNode; d++; } return d; };
+const isWs = n => n && n.nodeType === 3 && !n.nodeValue.trim();
+
+function layout(parent) {
+  const first = parent.firstElementChild, last = parent.lastElementChild;
+  let inner = null, closing = null;
+  if (first) {
+    const p = first.previousSibling; if (isWs(p) && p.nodeValue.includes('\n')) inner = '\n' + p.nodeValue.split('\n').pop();
+    const n = last.nextSibling; if (isWs(n) && n.nodeValue.includes('\n')) closing = '\n' + n.nodeValue.split('\n').pop();
+  }
+  let unit = '  ';
+  if (inner && closing && inner.startsWith(closing) && inner.length > closing.length) unit = inner.slice(closing.length);
+  if (closing == null) closing = '\n' + unit.repeat(depthOf(parent));
+  if (inner == null) inner = closing + unit;
+  return { inner, closing, unit };
+}
+function reindent(el, level, unit) {
+  if (!el.children.length) return;
+  for (const n of [...el.childNodes]) if (isWs(n)) el.removeChild(n);
+  const ind = '\n' + unit.repeat(level + 1);
+  for (const n of [...el.childNodes]) el.insertBefore(doc.createTextNode(ind), n);
+  el.appendChild(doc.createTextNode('\n' + unit.repeat(level)));
+  for (const c of el.children) reindent(c, level + 1, unit);
+}
+const levelOf = (inner, unit) => { const b = inner.replace(/^\n/, ''); return unit && b === unit.repeat(b.length / unit.length) ? b.length / unit.length : 0; };
+function insertPretty(parent, child, before = null) {
+  const { inner, closing, unit } = layout(parent);
+  reindent(child, levelOf(inner, unit), unit);
+  if (!parent.firstElementChild) {
+    for (const n of [...parent.childNodes]) if (isWs(n)) parent.removeChild(n);
+    parent.appendChild(doc.createTextNode(inner)); parent.appendChild(child); parent.appendChild(doc.createTextNode(closing));
+  } else if (before) {
+    parent.insertBefore(child, before); parent.insertBefore(doc.createTextNode(inner), before);
+  } else {
+    const last = parent.lastElementChild, after = last.nextSibling;
+    parent.insertBefore(doc.createTextNode(inner), after); parent.insertBefore(child, after);
+  }
+  return child;
+}
+function removePretty(el) { const p = el.parentNode, prev = el.previousSibling; if (isWs(prev)) p.removeChild(prev); p.removeChild(el); }
+function ensure(el, tag, first = false) { return kid(el, tag) || insertPretty(el, mk(tag), first ? el.firstElementChild : null); }
+
+function quatToRpy(x, y, z, w) {
+  const roll = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
+  const sp = 2 * (w * y - z * x), pitch = Math.abs(sp) >= 1 ? Math.sign(sp) * Math.PI / 2 : Math.asin(sp);
+  const yaw = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
+  return [roll, pitch, yaw];
+}
+function readPose(el) {
+  const pe = el && kid(el, 'pose'); if (!pe || !pe.textContent.trim()) return [0, 0, 0, 0, 0, 0];
+  let v = nums(pe.textContent, 0, []) || [];
+  if (pe.getAttribute('rotation_format') === 'quat_xyzw' && v.length >= 7) return [...v.slice(0, 3), ...quatToRpy(...v.slice(3, 7))];
+  v = [...v, 0, 0, 0, 0, 0, 0].slice(0, 6);
+  if (/^(true|1)$/i.test(pe.getAttribute('degrees') || '')) for (let i = 3; i < 6; i++) v[i] *= D2R;
+  return v;
+}
+function writePose(el, pose) {
+  const pe = ensure(el, 'pose', true);
+  let p = pose.map(Number);
+  if (pe.getAttribute('rotation_format') === 'quat_xyzw') pe.removeAttribute('rotation_format');
+  if (/^(true|1)$/i.test(pe.getAttribute('degrees') || '')) p = [...p.slice(0, 3), ...p.slice(3).map(a => a * R2D)];
+  pe.textContent = fmtList(p);
+}
+const SCRIPT_COLORS = { white:[1,1,1], black:[.05,.05,.05], darkgrey:[.35,.35,.35], grey:[.7,.7,.7], gray:[.7,.7,.7], red:[.85,.1,.1], green:[.1,.7,.1], blue:[.1,.2,.85], yellow:[.95,.85,.1], orange:[1,.5,.05], purple:[.5,.1,.6], turquoise:[.1,.75,.7], gold:[.85,.65,.15], wood:[.55,.4,.25], brick:[.6,.25,.2], road:[.25,.25,.25], asphalt:[.25,.25,.25], indigo:[.3,.1,.55] };
+function visualColor(vis) {
+  const m = kid(vis, 'material'); if (!m) return null;
+  for (const t of ['diffuse', 'ambient']) { const c = nums(txt(m, t), 3, null); if (c) { const full = nums(txt(m, t), 0, c); return [...full, 1].slice(0, 4); } }
+  const sc = kid(m, 'script'); const name = (sc && txt(sc, 'name') || '').toLowerCase();
+  if (name) { const key = name.split('/').pop().replace('transparent', ''); for (const w of Object.keys(SCRIPT_COLORS).sort((a, b) => b.length - a.length)) if (key.includes(w)) return [...SCRIPT_COLORS[w], name.includes('transparent') ? .5 : 1]; }
+  return null;
+}
+
+// =====================================================================  scene description
+let S = null, warnings = [], buildTok = 0;
+async function buildEntities() {
+  warnings = [];
+  const ents = [];
+  for (const el of kids(container())) {
+    let n = null;
+    if (el.tagName === 'model') n = await modelNode(el, true, worldDir);
+    else if (el.tagName === 'include') n = await includeNode(el, true);
+    else if (el.tagName === 'light') n = lightNode(el, true);
+    if (n) ents.push(n);
+  }
+  const seen = new Set();
+  for (const n of ents) { const base = n.name || n.kind; let k = base, i = 1; while (seen.has(k)) k = `${base}#${i++}`; seen.add(k); n.key = k; }
+  return ents;
+}
+async function modelNode(el, editable, baseDir) {
+  const n = { el: editable ? el : null, kind: 'model', name: el.getAttribute('name') || '', pose: readPose(el), static: /^(true|1)$/i.test(txt(el, 'static', 'false')), editable, children: [] };
+  for (const c of kids(el)) {
+    if (c.tagName === 'link') n.children.push({ kind: 'link', pose: readPose(c), children: kidsOf(c, 'visual').map(v => visualNode(v, editable, baseDir)) });
+    else if (c.tagName === 'model') n.children.push(await modelNode(c, editable, baseDir));
+    else if (c.tagName === 'include') n.children.push(await includeNode(c, false));
+  }
+  return n;
+}
+function visualNode(v, editable, baseDir) {
+  const col = visualColor(v);
+  return { el: editable ? v : null, kind: 'visual', name: v.getAttribute('name') || '', pose: readPose(v), geom: geomJson(kid(v, 'geometry'), baseDir), color: col || [.8, .8, .8, 1], colorExplicit: !!col, editable };
+}
+function geomJson(g, baseDir) {
+  const s = g && g.firstElementChild; if (!s) return null;
+  const t = s.tagName;
+  if (t === 'box') return { type: t, size: nums(txt(s, 'size'), 3, [1, 1, 1]) };
+  if (t === 'cylinder' || t === 'capsule') return { type: t, radius: num(txt(s, 'radius'), .5), length: num(txt(s, 'length'), 1) };
+  if (t === 'sphere') return { type: t, radius: num(txt(s, 'radius'), .5) };
+  if (t === 'ellipsoid') return { type: t, radii: nums(txt(s, 'radii'), 3, [1, 1, 1]) };
+  if (t === 'plane') return { type: t, normal: nums(txt(s, 'normal'), 3, [0, 0, 1]), size: nums(txt(s, 'size'), 2, [1, 1]) };
+  if (t === 'mesh') {
+    const uri = txt(s, 'uri', ''), scale = nums(txt(s, 'scale'), 3, [1, 1, 1]);
+    const p = uri ? resolveFile(uri, baseDir) : null;
+    if (p) return { type: 'mesh', uri, path: p, ext: p.split('.').pop().toLowerCase(), scale };
+    warnings.push(`Mesh not found: ${uri}`);
+    return { type: 'placeholder', uri, scale };
+  }
+  return { type: t };
+}
+async function includeNode(el, editable) {
+  const uri = txt(el, 'uri', ''), name0 = txt(el, 'name'), st0 = txt(el, 'static');
+  const m = uri ? await loadModel(uri) : null;
+  const n = { el: editable ? el : null, kind: 'include', uri, resolved: !!m, editable: false, children: [] };
+  let inner = null, name = name0, def = [0, 0, 0, 0, 0, 0], stat = st0;
+  if (m) inner = ['model', 'light'].includes(m.root.tagName) ? m.root : (kid(m.root, 'model') || kid(m.root, 'light'));
+  if (inner && inner.tagName === 'model') {
+    const mn = await modelNode(inner, false, m.dir); n.children = mn.children; name = name || mn.name; def = mn.pose; stat = stat ?? (mn.static ? 'true' : 'false');
+  } else if (inner && inner.tagName === 'light') {
+    const ln = lightNode(inner, false); name = name || ln.name; def = ln.pose; ln.pose = [0, 0, 0, 0, 0, 0]; n.children = [ln];
+  } else {
+    n.resolved = false; const low = uri.toLowerCase();
+    if (low.includes('ground') && low.includes('plane')) { n.children = [{ kind: 'visual', name: 'ground', pose: [0,0,0,0,0,0], editable: false, geom: { type: 'plane', normal: [0, 0, 1], size: [100, 100] }, color: [.7, .7, .7, 1], colorExplicit: true }]; stat = stat ?? 'true'; }
+    else if (/sun\/?$/.test(low)) { n.children = [{ kind: 'light', name: 'sun', lightType: 'directional', direction: [-.5, .1, -.9], pose: [0,0,0,0,0,0] }]; def = [0, 0, 10, 0, 0, 0]; }
+    else { n.children = [{ kind: 'visual', name: 'missing', pose: [0,0,0,0,0,0], editable: false, geom: { type: 'placeholder', uri }, color: [1, 0, 0, 1], colorExplicit: true }]; warnings.push(`Model not found: ${uri}`); }
+  }
+  n.name = name || uri.replace(/\/+$/, '').split('/').pop() || 'include';
+  n.pose = kid(el, 'pose') ? readPose(el) : def;
+  n.static = /^(true|1)$/i.test(stat || 'false');
+  return n;
+}
+function lightNode(el, editable) {
+  return { el: editable ? el : null, kind: 'light', name: el.getAttribute('name') || '', pose: readPose(el), lightType: el.getAttribute('type') || 'point', direction: nums(txt(el, 'direction'), 3, null) };
+}
+
+// =====================================================================  three.js view (Gazebo is Z-up)
+THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
+const view = $('#view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+view.prepend(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xb9c3cd);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 5000); camera.up.set(0, 0, 1); camera.position.set(9, -9, 7);
+const orbit = new OrbitControls(camera, renderer.domElement); orbit.enableDamping = true;
+const hemi = new THREE.HemisphereLight(0xffffff, 0x555560, 1.1); hemi.position.set(0, 0, 1); scene.add(hemi);
+const keyL = new THREE.DirectionalLight(0xffffff, 1.4); keyL.position.set(6, -4, 10); scene.add(keyL);
+const grid = new THREE.GridHelper(50, 50, 0x555555, 0x8a8f96); grid.rotation.x = Math.PI / 2; grid.position.z = .002; scene.add(grid);
+scene.add(new THREE.AxesHelper(1));
+const worldRoot = new THREE.Group(); scene.add(worldRoot);
+const tc = new TransformControls(camera, renderer.domElement); tc.setSize(.9); scene.add(tc);
+function resize() { const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); camera.aspect = w / Math.max(h, 1); camera.updateProjectionMatrix(); }
+new ResizeObserver(resize).observe(view);
+let selBox = null, groups = new Map(), selected = null, firstLoad = true;
+renderer.setAnimationLoop(() => { orbit.update(); if (selBox) selBox.update(); renderer.render(scene, camera); });
+
+const meshCache = new Map(), blobCache = new Map();
+async function blobUrl(p) { if (!blobCache.has(p)) blobCache.set(p, IX.files.get(p)().then(f => URL.createObjectURL(f))); return blobCache.get(p); }
+function loadMesh(p, ext) {
+  if (!meshCache.has(p)) meshCache.set(p, (async () => {
+    if (ext === 'stl') { const g = new STLLoader().parse(await readBuf(p)); g.computeVertexNormals(); return new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xbbbbbb, roughness: .7 })); }
+    if (ext === 'dae') {
+      const text = await readText(p), dir = dirname(p), map = new Map();
+      for (const m of text.matchAll(/<init_from>\s*(?:<ref>)?\s*([^<\s]+)\s*(?:<\/ref>)?\s*<\/init_from>/g)) {
+        const rel = decodeURI(m[1]); const f = resolveFile(rel, dir) || suffixLookup(rel.split('/').slice(-2).join('/'));
+        if (f) map.set(m[1], await blobUrl(f));
+      }
+      const mgr = new THREE.LoadingManager(); mgr.setURLModifier(u => map.get(u) || map.get(decodeURI(u)) || u);
+      const c = new ColladaLoader(mgr).parse(text, '');
+      const w = new THREE.Group(); w.rotation.x = Math.PI / 2; w.add(c.scene); return w;
+    }
+    if (ext === 'obj') return new OBJLoader().parse(await readText(p));
+    if (ext === 'glb' || ext === 'gltf') {
+      const data = ext === 'glb' ? await readBuf(p) : await readText(p);
+      const g = await new Promise((res, rej) => new GLTFLoader().parse(data, '', res, rej));
+      const w = new THREE.Group(); w.rotation.x = Math.PI / 2; w.add(g.scene); return w;
+    }
+    throw new Error('Unsupported mesh type .' + ext);
+  })());
+  return meshCache.get(p).then(o => o.clone(true));
+}
+function mat(c) {
+  const [r, g, b, a = 1] = c || [.8, .8, .8, 1];
+  const m = new THREE.MeshStandardMaterial({ roughness: .75, metalness: .05, side: THREE.DoubleSide, transparent: a < 1, opacity: a });
+  m.color.setRGB(r, g, b, THREE.SRGBColorSpace); return m;
+}
+const applyPose = (o, p) => { p = p || [0, 0, 0, 0, 0, 0]; o.position.set(p[0], p[1], p[2]); o.rotation.set(p[3], p[4], p[5], 'ZYX'); };
+const placeholder = () => new THREE.Mesh(new THREE.BoxGeometry(.5, .5, .5), new THREE.MeshBasicMaterial({ color: 0xff3333, wireframe: true }));
+function addVisual(g, n) {
+  const geo = n.geom; if (!geo) return; let m = null;
+  switch (geo.type) {
+    case 'box': m = new THREE.Mesh(new THREE.BoxGeometry(...geo.size), mat(n.color)); break;
+    case 'cylinder': m = new THREE.Mesh(new THREE.CylinderGeometry(geo.radius, geo.radius, geo.length, 40), mat(n.color)); m.rotation.x = Math.PI / 2; break;
+    case 'capsule': m = new THREE.Mesh(new THREE.CapsuleGeometry(geo.radius, geo.length, 8, 24), mat(n.color)); m.rotation.x = Math.PI / 2; break;
+    case 'sphere': m = new THREE.Mesh(new THREE.SphereGeometry(geo.radius, 40, 20), mat(n.color)); break;
+    case 'ellipsoid': m = new THREE.Mesh(new THREE.SphereGeometry(1, 40, 20), mat(n.color)); m.scale.set(...geo.radii); break;
+    case 'plane':
+      m = new THREE.Mesh(new THREE.PlaneGeometry(geo.size[0], geo.size[1]), mat(n.color));
+      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...geo.normal).normalize());
+      m.userData.isPlane = true; break;
+    case 'mesh': {
+      const holder = new THREE.Group(); holder.scale.set(...geo.scale); g.add(holder);
+      loadMesh(geo.path, geo.ext).then(o => { if (n.colorExplicit) o.traverse(x => { if (x.isMesh) x.material = mat(n.color); }); holder.add(o); })
+        .catch(e => { console.warn(geo.uri, e); holder.add(placeholder()); toast('Could not load mesh ' + geo.uri); });
+      return;
+    }
+    case 'placeholder': m = placeholder(); break;
+    default: return;
+  }
+  g.add(m);
+}
+function addLight(g, n) {
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(.15, 16, 8), new THREE.MeshBasicMaterial({ color: 0xffcc33 })));
+  if (n.direction) { const d = new THREE.Vector3(...n.direction); if (d.length() > 0) g.add(new THREE.ArrowHelper(d.normalize(), new THREE.Vector3(), 1.2, 0xff9900, .25, .15)); }
+}
+function buildNode(n, parent, top) {
+  const g = new THREE.Group(); g.rotation.order = 'ZYX'; applyPose(g, n.pose); g.userData.top = top;
+  if (n.kind === 'visual') addVisual(g, n); else if (n.kind === 'light') addLight(g, n);
+  for (const c of n.children || []) buildNode(c, g, top);
+  parent.add(g); return g;
+}
+function rebuild3D() {
+  tc.detach(); worldRoot.clear(); groups.clear();
+  for (const e of S) groups.set(e.key, buildNode(e, worldRoot, e.key));
+  renderSide(); select(selected);
+}
+async function refresh() {
+  if (!doc) return;
+  const t = ++buildTok;
+  const ents = await buildEntities();
+  if (t !== buildTok) return;
+  S = ents; rebuild3D(); updateStatus();
+  if (firstLoad) { firstLoad = false; setTimeout(frameAll, 50); }
+}
+
+// =====================================================================  selection, picking, gizmo
+const entity = k => S && S.find(e => e.key === k);
+function select(k) {
+  selected = k && groups.has(k) ? k : null;
+  const g = selected ? groups.get(selected) : null, e = entity(selected);
+  if (g && e && e.el) tc.attach(g); else tc.detach();
+  if (selBox) { scene.remove(selBox); selBox = null; }
+  if (g) { selBox = new THREE.BoxHelper(g, 0xffd400); scene.add(selBox); }
+  document.querySelectorAll('#list .item').forEach(n => n.classList.toggle('sel', n.dataset.key === selected));
+  renderProps();
+}
+const ray = new THREE.Raycaster(); let down = null;
+renderer.domElement.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!down) return; const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
+  if (moved > 4 || tc.dragging || tc.axis) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), camera);
+  const hits = ray.intersectObjects(worldRoot.children, true).filter(h => h.object.isMesh);
+  const h = hits.find(h => !h.object.userData.isPlane) || hits[0];
+  let o = h ? h.object : null; while (o && o.userData.top === undefined) o = o.parent;
+  select(o ? o.userData.top : null);
+});
+tc.addEventListener('dragging-changed', ev => { orbit.enabled = !ev.value; if (!ev.value) commitGizmo(); });
+tc.addEventListener('objectChange', () => {
+  const g = groups.get(selected); if (!g) return;
+  const v = [g.position.x, g.position.y, g.position.z, g.rotation.x * R2D, g.rotation.y * R2D, g.rotation.z * R2D];
+  document.querySelectorAll('[data-pose]').forEach(i => i.value = r4(v[+i.dataset.pose]));
+});
+function commitGizmo() {
+  const e = entity(selected), g = groups.get(selected); if (!e || !g || !e.el) return;
+  const pose = [g.position.x, g.position.y, g.position.z, g.rotation.x, g.rotation.y, g.rotation.z];
+  if (pose.every((v, i) => Math.abs(v - e.pose[i]) < 1e-7)) return;
+  edit(() => writePose(e.el, pose));
+}
+function fit(box) {
+  const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3()).length() || 2;
+  const dir = camera.position.clone().sub(orbit.target).normalize();
+  orbit.target.copy(c); camera.position.copy(c).addScaledVector(dir, s * 1.1 + 1);
+  camera.near = Math.max(.01, s / 2000); camera.far = Math.max(2000, s * 30); camera.updateProjectionMatrix();
+}
+function frameAll() { const b = new THREE.Box3(); worldRoot.updateMatrixWorld(true); worldRoot.traverse(o => { if (o.isMesh && !o.userData.isPlane) b.expandByObject(o); }); if (!b.isEmpty()) fit(b); }
+function focusSel() { const g = groups.get(selected); if (g) { const b = new THREE.Box3().setFromObject(g); if (!b.isEmpty()) fit(b); } }
+
+// =====================================================================  editing
+function edit(fn) {
+  if (!doc) return;
+  const before = serialize();
+  try {
+    const r = fn();
+    undo.push(before); if (undo.length > 100) undo.shift(); redo = [];
+    if (r && r.select !== undefined) selected = r.select || null;
+    changed();
+  } catch (err) { doc = parseXml(before); toast(err.message); }
+  refresh();
+}
+function changed() { dirty = true; updateStatus(); if (liveSave && fileHandle) save(); }
+function undoRedo(isUndo) {
+  const [src, dst] = isUndo ? [undo, redo] : [redo, undo];
+  if (!src.length) return toast(`Nothing to ${isUndo ? 'undo' : 'redo'}`);
+  dst.push(serialize()); doc = parseXml(src.pop()); changed(); refresh();
+}
+const topNames = exclude => new Set(kids(container()).filter(c => c !== exclude).map(c => c.getAttribute('name') || txt(c, 'name')).filter(Boolean));
+const GEOM_KEYS = { box: { size: 3 }, cylinder: { radius: 1, length: 1 }, sphere: { radius: 1 }, capsule: { radius: 1, length: 1 }, ellipsoid: { radii: 3 }, plane: { size: 2, normal: 3 }, mesh: { scale: 3 } };
+function setName(el, name) {
+  name = String(name).trim();
+  if (!/^[^\s<>&"']+$/.test(name)) throw new Error('Name must be non-empty, without spaces or < > & quotes');
+  if (el.parentNode === container() && topNames(el).has(name)) throw new Error(`“${name}” is already used in this world`);
+  if (el.tagName === 'include') ensure(el, 'name', true).textContent = name; else el.setAttribute('name', name);
+  return { select: name };
+}
+function setGeom(vis, params) {
+  const shape = kid(vis, 'geometry') && kid(vis, 'geometry').firstElementChild; if (!shape) throw new Error('This visual has no geometry');
+  const allowed = GEOM_KEYS[shape.tagName] || {}, nv = {};
+  for (const [k, v] of Object.entries(params)) {
+    const vals = (Array.isArray(v) ? v : [v]).map(Number);
+    if (!(k in allowed) || vals.length !== allowed[k] || vals.some(x => !Number.isFinite(x))) throw new Error(`Bad value for ${k}`);
+    if (k !== 'normal' && vals.some(x => x <= 0)) throw new Error(`${k} must be greater than 0`);
+    nv[k] = fmtList(vals);
+  }
+  const old = Object.fromEntries(Object.keys(nv).map(k => [k, (txt(shape, k) || '').split(/\s+/).join(' ')]));
+  for (const [k, v] of Object.entries(nv)) ensure(shape, k).textContent = v;
+  const link = vis.parentNode;
+  if (shape.tagName !== 'mesh') for (const col of kidsOf(link, 'collision')) {   // keep the matching collision in sync
+    const cs = kid(col, 'geometry') && kid(col, 'geometry').firstElementChild;
+    if (cs && cs.tagName === shape.tagName && Object.keys(nv).every(k => (txt(cs, k) || '').split(/\s+/).join(' ') === old[k]))
+      for (const [k, v] of Object.entries(nv)) ensure(cs, k).textContent = v;
+  }
+}
+function setColor(vis, rgba) {
+  const m = ensure(vis, 'material');
+  for (const s of kidsOf(m, 'script')) removePretty(s);
+  const t = fmtList(rgba.map(x => Math.min(1, Math.max(0, x))));
+  ensure(m, 'ambient').textContent = t; ensure(m, 'diffuse').textContent = t;
+}
+const INERTIA = { box: [.166667, .166667, .166667], cylinder: [.145833, .145833, .125], sphere: [.1, .1, .1] };
+const GEOM_XML = { box: '<box><size>1 1 1</size></box>', cylinder: '<cylinder><radius>0.5</radius><length>1</length></cylinder>', sphere: '<sphere><radius>0.5</radius></sphere>' };
+const NEW_COLOR = { box: '0.8 0.3 0.1 1', cylinder: '0.1 0.45 0.8 1', sphere: '0.2 0.7 0.3 1' };
+function addShape(shape) {
+  const names = topNames(); let i = 1; while (names.has(`${shape}_${i}`)) i++;
+  const name = `${shape}_${i}`, [ixx, iyy, izz] = INERTIA[shape], g = GEOM_XML[shape], c = NEW_COLOR[shape];
+  const xml = `<model name="${name}"><static>true</static><pose>${fmtList([orbit.target.x, orbit.target.y, .5, 0, 0, 0])}</pose><link name="link"><inertial><mass>1</mass><inertia><ixx>${ixx}</ixx><ixy>0</ixy><ixz>0</ixz><iyy>${iyy}</iyy><iyz>0</iyz><izz>${izz}</izz></inertia></inertial><collision name="collision"><geometry>${g}</geometry></collision><visual name="visual"><geometry>${g}</geometry><material><ambient>${c}</ambient><diffuse>${c}</diffuse></material></visual></link></model>`;
+  insertPretty(container(), doc.importNode(parseXml(xml).documentElement, true));
+  return { select: name };
+}
+function duplicate(el) {
+  const clone = el.cloneNode(true), { inner } = layout(el.parentNode);
+  el.parentNode.insertBefore(clone, el.nextSibling); el.parentNode.insertBefore(doc.createTextNode(inner), clone);
+  const old = el.getAttribute('name') || txt(el, 'name') || (txt(el, 'uri', 'copy').replace(/\/+$/, '').split('/').pop());
+  const base = old.replace(/_\d+$/, ''), names = topNames(); let i = 1; while (names.has(`${base}_${i}`)) i++;
+  const name = `${base}_${i}`;
+  if (clone.tagName === 'include') ensure(clone, 'name', true).textContent = name; else clone.setAttribute('name', name);
+  const e = entity(selected); const p = kid(clone, 'pose') ? readPose(clone) : (e ? [...e.pose] : [0, 0, 0, 0, 0, 0]);
+  p[0] += 1; writePose(clone, p);
+  return { select: name };
+}
+function getXml(el) {
+  let s = new XMLSerializer().serializeToString(el);
+  const { inner } = layout(el.parentNode), base = inner.replace(/^\n/, '');
+  return s.split('\n').map(l => l.startsWith(base) ? l.slice(base.length) : l).join('\n');
+}
+function setXml(el, xml) {
+  const n = doc.importNode(parseXml(xml).documentElement, true);
+  const { inner, unit } = layout(el.parentNode);
+  reindent(n, levelOf(inner, unit), unit);
+  el.parentNode.replaceChild(n, el);
+  const name = n.getAttribute('name') || txt(n, 'name'); return name ? { select: name } : {};
+}
+
+// =====================================================================  open / save
+function showEmptyRead(name) {
+  setStatus('Could not read file', 'err');
+  $('#empty').style.display = 'flex';
+  $('#emptyMsg').innerHTML = `<div class="warn" style="font-size:13px;text-align:left;margin-top:16px;line-height:1.5;word-break:normal">
+    The browser read <b>0 bytes</b> from <b>${esc(name)}</b>.<br>
+    On Ubuntu this usually means the browser is a <b>Snap</b> (Chromium/Firefox) and isn't allowed to read that folder
+    (for example <code>/opt/ros/…</code>, <code>/usr/share/…</code> or a hidden folder such as <code>~/.gazebo</code>).<br><br>
+    Fix: copy the world into your home folder, e.g.<br>
+    <code>cp /path/to/warehouse.world ~/Documents/</code><br>
+    then drop that copy here. Or click <b>Paste XML</b> and paste the file contents.</div>`;
+}
+function pasteXml() {
+  $('#empty').style.display = 'flex';
+  $('#emptyMsg').innerHTML = `<textarea id="pasteBox" placeholder="Paste the contents of your .world / .sdf file here" style="min-height:220px"></textarea>
+    <div class="btns" style="justify-content:center;margin-top:8px"><button class="primary" id="pasteGo">Load pasted world</button></div>`;
+  $('#pasteGo').onclick = () => { const t = $('#pasteBox').value; $('#emptyMsg').innerHTML = ''; loadWorld(t, 'pasted.world', null, null); };
+}
+function loadWorld(text, name, handle, path) {
+  if (!text || !text.trim()) { showEmptyRead(name); return; }
+  let d; try { d = parseXml(text); } catch (e) { return toast('Could not read this file: ' + e.message); }
+  const r = d.documentElement.tagName;
+  if (r !== 'sdf' && r !== 'world') return toast(`This doesn't look like an SDF world (root is <${r}>)`);
+  doc = d; decl = (text.match(/^\s*(<\?xml[^>]*\?>)/) || [])[1] || '';
+  fileName = name; fileHandle = handle || null; worldPath = path || null; worldDir = path ? dirname(path) : null;
+  if (!worldPath) linkWorldPath();
+  undo = []; redo = []; dirty = false; selected = null; firstLoad = true; modelCache.clear();
+  $('#emptyMsg').innerHTML = ''; $('#empty').style.display = 'none'; document.title = name + ' – Gazebo World Editor';
+  if (fileHandle) fileHandle.getFile().then(f => lastMod = f.lastModified).catch(() => {});
+  refresh();
+}
+async function openHandle(h, path) {
+  const f = await h.getFile();
+  loadWorld(await f.text(), h.name, h, path);
+  try { if (h.requestPermission) await h.requestPermission({ mode: 'readwrite' }); } catch {}
+}
+async function openIndexedWorld(p) {
+  const h = IX.handles.get(p);
+  if (h) return openHandle(h, p);
+  loadWorld(await readText(p), p.split('/').pop(), null, p);
+}
+async function pickWorld() {
+  if (FS_API) {
+    try { const [h] = await window.showOpenFilePicker({ types: [{ description: 'Gazebo world', accept: { 'application/xml': ['.world', '.sdf', '.xml'] } }] }); await openHandle(h, null); }
+    catch (e) { if (e.name !== 'AbortError') toast(e.message); }
+  } else $('#fileInput').click();
+}
+async function pickFolder() {
+  if ('showDirectoryPicker' in window) {
+    try { await addFolderHandle(await window.showDirectoryPicker({ mode: 'readwrite' })); } catch (e) { if (e.name !== 'AbortError') toast(e.message); }
+  } else $('#dirInput').click();
+}
+$('#fileInput').onchange = async ev => { const f = ev.target.files[0]; if (f) loadWorld(await f.text(), f.name, null, null); ev.target.value = ''; };
+$('#dirInput').onchange = ev => { if (ev.target.files.length) addFolderFiles([...ev.target.files]); ev.target.value = ''; };
+
+async function writeTo(h) {
+  if (h.queryPermission && (await h.queryPermission({ mode: 'readwrite' })) !== 'granted' &&
+      (await h.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('Permission to write the file was not given');
+  const w = await h.createWritable(); await w.write(serialize()); await w.close();
+  lastMod = (await h.getFile()).lastModified;
+}
+function save() {
+  if (!doc) return;
+  if (!fileHandle) { return FS_API ? saveAs() : download(); }
+  saving = saving.then(async () => {
+    setStatus('Saving…', 'dirty');
+    try { await writeTo(fileHandle); dirty = false; } catch (e) { toast('Could not save: ' + e.message + ' – click Save to try again'); }
+    updateStatus();
+  });
+  return saving;
+}
+async function saveAs() {
+  if (!doc) return;
+  if (!('showSaveFilePicker' in window)) return download();
+  try {
+    const h = await window.showSaveFilePicker({ suggestedName: fileName || 'world.world', types: [{ description: 'Gazebo world', accept: { 'application/xml': ['.world', '.sdf'] } }] });
+    fileHandle = h; fileName = h.name; await writeTo(h); dirty = false; updateStatus();
+  } catch (e) { if (e.name !== 'AbortError') toast(e.message); }
+}
+function download() {
+  if (!doc) return;
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([serialize()], { type: 'application/xml' }));
+  a.download = fileName || 'world.world'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  if (!fileHandle) { dirty = false; updateStatus(); }
+}
+setInterval(async () => {   // reload when the file is changed by another program
+  if (!fileHandle || tc.dragging) return;
+  try {
+    const f = await fileHandle.getFile(); if (!lastMod || f.lastModified === lastMod) return;
+    lastMod = f.lastModified;
+    if (dirty) return toast('The file changed on disk. Your unsaved edits were kept; Save will overwrite it.');
+    const text = await f.text(); const d = parseXml(text);
+    undo.push(serialize()); doc = d; modelCache.clear(); textCache.clear(); toast('File changed on disk – reloaded'); refresh();
+  } catch {}
+}, 2000);
+
+// drag & drop anywhere
+let dragDepth = 0;
+addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; document.body.classList.add('dragging'); });
+addEventListener('dragleave', e => { dragDepth--; if (dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', async e => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging');
+  const items = [...e.dataTransfer.items].filter(i => i.kind === 'file');
+  const pending = items.map(i => i.getAsFileSystemHandle ? i.getAsFileSystemHandle() : Promise.resolve(null)); // must start synchronously
+  const files = items.map(i => i.getAsFile());
+  const handles = await Promise.all(pending);
+  let world = null;
+  for (let k = 0; k < items.length; k++) {
+    const h = handles[k], f = files[k];
+    if (h && h.kind === 'directory') await addFolderHandle(h);
+    else if (h && h.kind === 'file' && /\.(world|sdf|xml)$/i.test(h.name)) world = { h };
+    else if (!h && f && /\.(world|sdf|xml)$/i.test(f.name)) world = { f };
+    else if (!h && f && !f.type && f.size % 4096 === 0) toast('Folders can be dropped in Chrome/Edge only. Use “Add models folder”.');
+  }
+  if (world && world.h) openHandle(world.h, null);
+  else if (world && world.f) loadWorld(await world.f.text(), world.f.name, null, null);
+});
+
+// =====================================================================  UI panels
+function setStatus(text, cls = '') { const p = $('#status'); p.textContent = text; p.className = 'pill ' + cls; }
+function updateStatus() {
+  $('#file').textContent = doc ? fileName : 'No file'; $('#file').title = worldPath || fileName || '';
+  $('#bUndo').disabled = !undo.length; $('#bRedo').disabled = !redo.length;
+  for (const b of ['#bSave', '#bSaveAs', '#bDownload']) $(b).disabled = !doc;
+  if (!doc) return setStatus('Drop a world file', 'idle');
+  if (!fileHandle) return setStatus(dirty ? 'Edited – not linked to a file (Save as / Download)' : 'Not linked to a file', dirty ? 'dirty' : 'idle');
+  setStatus(dirty ? 'Unsaved changes' : 'Saved to file', dirty ? 'dirty' : '');
+}
+let toastT; function toast(m) { const t = $('#toast'); t.textContent = m; t.style.opacity = 1; clearTimeout(toastT); toastT = setTimeout(() => t.style.opacity = 0, 4000); }
+
+function renderSide() {
+  const f = $('#filter').value.toLowerCase();
+  $('#list').innerHTML = !S ? '<div class="muted">No world open</div>' :
+    (S.filter(e => !f || e.key.toLowerCase().includes(f)).map(e => `<div class="item${e.key === selected ? ' sel' : ''}" data-key="${esc(e.key)}"><span class="k">${e.kind}</span><span>${esc(e.key)}</span></div>`).join('') || '<div class="muted">Nothing here</div>');
+  const ws = IX.worlds.slice(0, 60);
+  $('#worlds').innerHTML = ws.length ? '<h4>Worlds in folder</h4>' + ws.map(p => `<div class="item" data-world="${esc(p)}" title="${esc(p)}"><span class="k">open</span><span>${esc(p.split('/').pop())}</span></div>`).join('') : '';
+  $('#folders').innerHTML = IX.roots.length ? '<h4>Model folders</h4>' + IX.roots.map(r => `<div class="muted">📁 ${esc(r)}</div>`).join('') + `<div class="muted" style="font-size:11px">${IX.modelDirs.size} models · ${IX.pkgDirs.size} packages</div>` : '';
+  const w = [...new Set(warnings)];
+  $('#warns').innerHTML = w.length ? '<h4>Warnings</h4>' + w.slice(0, 40).map(x => `<div class="warn">${esc(x)}</div>`).join('') + (IX.roots.length ? '' : '<div class="muted" style="font-size:12px;margin-top:6px">Tip: drop your workspace or models folder here so these can be found.</div>') : '';
+}
+$('#list').addEventListener('click', e => { const it = e.target.closest('.item'); if (it) select(it.dataset.key); });
+$('#worlds').addEventListener('click', e => { const it = e.target.closest('.item'); if (it) openIndexedWorld(it.dataset.world); });
+$('#filter').addEventListener('input', renderSide);
+
+function collectVisuals(n, out) { for (const c of n.children || []) { if (c.kind === 'visual') out.push(c); collectVisuals(c, out); } return out; }
+function visualEditor(v, i) {
+  const g = v.geom || {}, dis = v.editable ? '' : 'disabled';
+  const field = (label, key, idx, val, step = .05) => `<div><label class="f">${label}</label><input type="number" step="${step}" data-vi="${i}" data-key="${key}" ${idx != null ? `data-idx="${idx}"` : ''} value="${r4(val)}" ${dis}></div>`;
+  let f = '';
+  if (g.type === 'box') f = `<div class="row">${field('size x', 'size', 0, g.size[0])}${field('size y', 'size', 1, g.size[1])}${field('size z', 'size', 2, g.size[2])}</div>`;
+  else if (g.type === 'cylinder' || g.type === 'capsule') f = `<div class="row">${field('radius', 'radius', null, g.radius)}${field('length', 'length', null, g.length)}</div>`;
+  else if (g.type === 'sphere') f = `<div class="row">${field('radius', 'radius', null, g.radius)}</div>`;
+  else if (g.type === 'ellipsoid') f = `<div class="row">${field('rx', 'radii', 0, g.radii[0])}${field('ry', 'radii', 1, g.radii[1])}${field('rz', 'radii', 2, g.radii[2])}</div>`;
+  else if (g.type === 'plane') f = `<div class="row">${field('size x', 'size', 0, g.size[0], 1)}${field('size y', 'size', 1, g.size[1], 1)}</div>`;
+  else if (g.type === 'mesh' || g.type === 'placeholder') f = `<div class="muted" style="word-break:break-all;margin-bottom:4px">${esc(g.uri || '')}</div>` + (g.scale ? `<div class="row">${field('scale x', 'scale', 0, g.scale[0], .1)}${field('scale y', 'scale', 1, g.scale[1], .1)}${field('scale z', 'scale', 2, g.scale[2], .1)}</div>` : '');
+  else f = `<div class="muted">${esc(g.type || 'no geometry')} (edit via XML)</div>`;
+  const c = v.color || [.8, .8, .8, 1];
+  const hex = '#' + c.slice(0, 3).map(x => Math.round(Math.min(1, Math.max(0, x)) * 255).toString(16).padStart(2, '0')).join('');
+  return `<div class="vis"><div style="display:flex;justify-content:space-between;margin-bottom:6px"><b>${esc(v.name || 'visual')}</b><span class="k">${esc(g.type || '')}</span></div>${f}
+    <div style="display:flex;gap:8px;align-items:center;margin-top:4px"><input type="color" data-color="${i}" value="${hex}" ${dis}><label class="f" style="margin:0">alpha</label><input type="number" min="0" max="1" step="0.1" data-alpha="${i}" value="${r4(c[3] ?? 1)}" style="width:72px" ${dis}></div></div>`;
+}
+function renderProps() {
+  const p = $('#props'), e = entity(selected);
+  if (!e) {
+    p.innerHTML = doc ? `<h4>World</h4><div><b>${esc(container().getAttribute('name') || fileName)}</b></div><div class="muted">${S ? S.length : 0} top-level entities</div>
+      <h4>How to edit</h4><div class="muted">Click something to select it, then drag the gizmo or type exact values here.
+      With <b>Live save</b> on, every change is written straight into <b>${esc(fileName)}</b>.<br><br>
+      W move · E rotate · F focus · Del delete<br>Ctrl+D duplicate · Ctrl+Z undo · Ctrl+Y redo · Ctrl+S save</div>`
+      : `<h4>Getting started</h4><div class="muted">1. Drop your <code>.world</code> file in the middle.<br>2. (Optional) Drop your workspace or models folder too, so meshes and <code>model://</code> includes are shown.<br>3. Edit, and the file updates.</div>`;
+    return;
+  }
+  const ro = !e.el, dis = ro ? 'disabled' : '';
+  let h = `<h4>${esc(e.kind)}</h4><label class="f">Name</label><input id="pName" value="${esc(e.name)}" ${dis}>`;
+  if (e.kind !== 'light') h += `<label style="display:block;margin-top:8px"><input type="checkbox" id="pStatic" ${e.static ? 'checked' : ''} ${dis}> Static</label>`;
+  if (e.kind === 'include') h += `<label class="f" style="margin-top:8px">URI</label><input value="${esc(e.uri)}" disabled>` + (e.resolved ? '' : '<div class="warn">Model files not found, so a stand-in is shown. Drop the folder that contains this model.</div>');
+  h += `<h4>Pose</h4>
+    <div class="row">${['x', 'y', 'z'].map((a, i) => `<div><label class="f">${a} (m)</label><input type="number" step="0.05" data-pose="${i}" value="${r4(e.pose[i])}" ${dis}></div>`).join('')}</div>
+    <div class="row">${['roll', 'pitch', 'yaw'].map((a, i) => `<div><label class="f">${a} (°)</label><input type="number" step="5" data-pose="${i + 3}" value="${r4(e.pose[i + 3] * R2D)}" ${dis}></div>`).join('')}</div>`;
+  const vis = collectVisuals(e, []);
+  if (vis.length) {
+    h += `<h4>Visuals${vis[0].editable ? '' : ' · from included model (read-only)'}</h4>` + vis.slice(0, 30).map(visualEditor).join('');
+    if (vis.length > 30) h += `<div class="muted">+${vis.length - 30} more (use Edit XML)</div>`;
+  }
+  if (e.el) h += `<h4>Actions</h4><div class="btns"><button id="aFocus">Focus</button><button id="aDup">Duplicate</button><button id="aDel">Delete</button><button id="aXml">Edit XML</button></div><div id="xmlBox"></div>`;
+  p.innerHTML = h;
+  if (ro) return;
+  $('#pName').onchange = ev => edit(() => setName(e.el, ev.target.value));
+  const st = $('#pStatic'); if (st) st.onchange = ev => edit(() => { ensure(e.el, 'static', true).textContent = ev.target.checked ? 'true' : 'false'; });
+  p.querySelectorAll('[data-pose]').forEach(inp => inp.onchange = () => {
+    const k = +inp.dataset.pose, v = parseFloat(inp.value); if (!Number.isFinite(v)) return;
+    const pose = [...e.pose]; pose[k] = k > 2 ? v * D2R : v; edit(() => writePose(e.el, pose));
+  });
+  p.querySelectorAll('[data-vi]').forEach(inp => inp.onchange = () => {
+    const v = vis[+inp.dataset.vi], key = inp.dataset.key, n = parseFloat(inp.value);
+    if (!(n > 0)) return toast('Must be greater than 0');
+    let val = n; if (inp.dataset.idx != null) { val = [...v.geom[key]]; val[+inp.dataset.idx] = n; }
+    edit(() => setGeom(v.el, { [key]: val }));
+  });
+  const sendColor = i => {
+    const hex = p.querySelector(`[data-color="${i}"]`).value, a = parseFloat(p.querySelector(`[data-alpha="${i}"]`).value);
+    const c = new THREE.Color(); c.setStyle(hex, THREE.SRGBColorSpace); const o = {}; c.getRGB(o, THREE.SRGBColorSpace);
+    edit(() => setColor(vis[i].el, [o.r, o.g, o.b, Number.isFinite(a) ? a : 1]));
+  };
+  p.querySelectorAll('[data-color]').forEach(x => x.onchange = () => sendColor(+x.dataset.color));
+  p.querySelectorAll('[data-alpha]').forEach(x => x.onchange = () => sendColor(+x.dataset.alpha));
+  $('#aFocus').onclick = focusSel;
+  $('#aDup').onclick = () => edit(() => duplicate(e.el));
+  $('#aDel').onclick = () => edit(() => { removePretty(e.el); return { select: '' }; });
+  $('#aXml').onclick = () => {
+    $('#xmlBox').innerHTML = `<textarea id="xmlText" spellcheck="false"></textarea><div class="btns" style="margin-top:6px"><button id="xApply" class="primary">Apply XML</button><button id="xCancel">Cancel</button></div>`;
+    $('#xmlText').value = getXml(e.el);
+    $('#xApply').onclick = () => edit(() => setXml(e.el, $('#xmlText').value));
+    $('#xCancel').onclick = () => $('#xmlBox').innerHTML = '';
+  };
+}
+
+// =====================================================================  toolbar & keys
+function setMode(m) { tc.setMode(m); $('#bMove').classList.toggle('on', m === 'translate'); $('#bRot').classList.toggle('on', m === 'rotate'); }
+$('#bMove').onclick = () => setMode('translate');
+$('#bRot').onclick = () => setMode('rotate');
+$('#bSpace').onclick = () => { const s = tc.space === 'world' ? 'local' : 'world'; tc.setSpace(s); $('#bSpace').textContent = s === 'world' ? 'World axes' : 'Local axes'; };
+$('#snap').onchange = ev => { tc.setTranslationSnap(ev.target.checked ? .1 : null); tc.setRotationSnap(ev.target.checked ? 15 * D2R : null); };
+$('#bUndo').onclick = () => undoRedo(true);
+$('#bRedo').onclick = () => undoRedo(false);
+$('#auto').onchange = ev => { liveSave = ev.target.checked; if (liveSave && dirty && fileHandle) save(); };
+$('#bSave').onclick = save; $('#bSaveAs').onclick = saveAs; $('#bDownload').onclick = download;
+$('#bOpen').onclick = $('#eOpen').onclick = pickWorld;
+$('#bFolder').onclick = $('#eFolder').onclick = pickFolder;
+$('#ePaste').onclick = pasteXml;
+$('#eNew').onclick = () => loadWorld('<?xml version="1.0" ?>\n<sdf version="1.6">\n  <world name="default">\n    <include>\n      <uri>model://ground_plane</uri>\n    </include>\n    <include>\n      <uri>model://sun</uri>\n    </include>\n  </world>\n</sdf>\n', 'new_world.world', null, null);
+document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => doc ? edit(() => addShape(b.dataset.add)) : toast('Open a world first'));
+addEventListener('keydown', ev => {
+  if (ev.target.closest && ev.target.closest('input,textarea')) return;
+  const k = ev.key.toLowerCase(), mod = ev.ctrlKey || ev.metaKey, e = entity(selected);
+  if (mod && k === 'z' && !ev.shiftKey) { ev.preventDefault(); undoRedo(true); }
+  else if (mod && (k === 'y' || (k === 'z' && ev.shiftKey))) { ev.preventDefault(); undoRedo(false); }
+  else if (mod && k === 's') { ev.preventDefault(); save(); }
+  else if (mod && k === 'o') { ev.preventDefault(); pickWorld(); }
+  else if (mod && k === 'd') { ev.preventDefault(); if (e && e.el) edit(() => duplicate(e.el)); }
+  else if (mod) return;
+  else if (k === 'w') setMode('translate');
+  else if (k === 'e') setMode('rotate');
+  else if (k === 'f') focusSel();
+  else if (k === 'escape') select(null);
+  else if ((k === 'delete' || k === 'backspace') && e && e.el) edit(() => { removePretty(e.el); return { select: '' }; });
+});
+addEventListener('beforeunload', ev => { if (dirty) { ev.preventDefault(); ev.returnValue = ''; } });
+renderSide(); renderProps(); updateStatus();
+if (!FS_API) toast('This browser can’t write files directly. Use Download, or open in Chrome/Edge to save in place.');
+</script>
+</body>
+</html>
