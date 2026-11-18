@@ -53,6 +53,7 @@ code{background:#16191d;padding:1px 4px;border-radius:4px}
   <span class="title" id="file">No file</span><span class="pill idle" id="status">Drop a world file</span>
   <span class="sp"></span>
   <button id="bMove" class="on" title="Move (W)">Move</button><button id="bRot" title="Rotate (E)">Rotate</button>
+  <button id="bFit" title="Show the whole world (A)">Fit all</button>
   <button id="bSpace" title="Gizmo axes: world or local">World axes</button>
   <label title="Snap 0.1 m / 15°"><input type="checkbox" id="snap"> Snap</label>
   <span class="sep"></span>
@@ -401,7 +402,21 @@ renderer.setPixelRatio(window.devicePixelRatio);
 view.prepend(renderer.domElement);
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0xb9c3cd);
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 5000); camera.up.set(0, 0, 1); camera.position.set(9, -9, 7);
-const orbit = new OrbitControls(camera, renderer.domElement); orbit.enableDamping = true;
+const orbit = new OrbitControls(camera, renderer.domElement);
+orbit.enableDamping = true; orbit.dampingFactor = .15;
+orbit.zoomToCursor = true;          // scroll zooms toward the mouse pointer, not the screen centre
+orbit.zoomSpeed = 1.4; orbit.minDistance = .05; orbit.maxDistance = 5000;
+orbit.screenSpacePanning = true;
+// double-click: orbit around / zoom to the point you clicked
+renderer.domElement.addEventListener('dblclick', ev => {
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1), camera);
+  const h = ray.intersectObjects(worldRoot.children, true).find(h => h.object.isMesh);
+  const pt = h ? h.point : ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), new THREE.Vector3());
+  if (!pt) return;
+  const off = camera.position.clone().sub(orbit.target);
+  orbit.target.copy(pt); camera.position.copy(pt).add(off.multiplyScalar(.5));
+});
 const hemi = new THREE.HemisphereLight(0xffffff, 0x555560, 1.1); hemi.position.set(0, 0, 1); scene.add(hemi);
 const keyL = new THREE.DirectionalLight(0xffffff, 1.4); keyL.position.set(6, -4, 10); scene.add(keyL);
 const grid = new THREE.GridHelper(50, 50, 0x555555, 0x8a8f96); grid.rotation.x = Math.PI / 2; grid.position.z = .002; scene.add(grid);
@@ -411,7 +426,14 @@ const tc = new TransformControls(camera, renderer.domElement); tc.setSize(.9); s
 function resize() { const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); camera.aspect = w / Math.max(h, 1); camera.updateProjectionMatrix(); }
 new ResizeObserver(resize).observe(view);
 let selBox = null, groups = new Map(), selected = null, firstLoad = true;
-renderer.setAnimationLoop(() => { orbit.update(); if (selBox) selBox.update(); renderer.render(scene, camera); });
+let lastNear = 0;
+renderer.setAnimationLoop(() => {
+  orbit.update();
+  // adapt the clipping planes to the zoom level so close-ups don't get cut off
+  const d = camera.position.distanceTo(orbit.target), near = Math.min(1, Math.max(.002, d / 400));
+  if (Math.abs(near - lastNear) / near > .2) { lastNear = near; camera.near = near; camera.far = Math.max(5000, d * 100); camera.updateProjectionMatrix(); }
+  if (selBox) selBox.update(); renderer.render(scene, camera);
+});
 
 const meshCache = new Map(), blobCache = new Map();
 async function blobUrl(p) { if (!blobCache.has(p)) blobCache.set(p, IX.files.get(p)().then(f => URL.createObjectURL(f))); return blobCache.get(p); }
@@ -507,11 +529,11 @@ const ray = new THREE.Raycaster(); let down = null;
 renderer.domElement.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
 renderer.domElement.addEventListener('pointerup', e => {
   if (!down) return; const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
-  if (moved > 4 || tc.dragging || tc.axis) return;
+  if (moved > 4 || tc.dragging || tc.axis || e.detail > 1) return;
   const r = renderer.domElement.getBoundingClientRect();
   ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), camera);
   const hits = ray.intersectObjects(worldRoot.children, true).filter(h => h.object.isMesh);
-  const h = hits.find(h => !h.object.userData.isPlane) || hits[0];
+  const h = hits.find(h => !h.object.userData.isPlane);   // clicking empty floor deselects (select the ground from the list)
   let o = h ? h.object : null; while (o && o.userData.top === undefined) o = o.parent;
   select(o ? o.userData.top : null);
 });
@@ -531,8 +553,10 @@ function fit(box) {
   const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3()).length() || 2;
   const dir = camera.position.clone().sub(orbit.target).normalize();
   orbit.target.copy(c); camera.position.copy(c).addScaledVector(dir, s * 1.1 + 1);
-  camera.near = Math.max(.01, s / 2000); camera.far = Math.max(2000, s * 30); camera.updateProjectionMatrix();
+  lastNear = 0;
 }
+function zoomBy(f) { const off = camera.position.clone().sub(orbit.target).multiplyScalar(f); if (off.length() > .05) camera.position.copy(orbit.target).add(off); }
+$('#bFit').onclick = () => frameAll();
 function frameAll() { const b = new THREE.Box3(); worldRoot.updateMatrixWorld(true); worldRoot.traverse(o => { if (o.isMesh && !o.userData.isPlane) b.expandByObject(o); }); if (!b.isEmpty()) fit(b); }
 function focusSel() { const g = groups.get(selected); if (g) { const b = new THREE.Box3().setFromObject(g); if (!b.isEmpty()) fit(b); } }
 
@@ -789,7 +813,7 @@ function renderProps() {
     p.innerHTML = doc ? `<h4>World</h4><div><b>${esc(container().getAttribute('name') || fileName)}</b></div><div class="muted">${S ? S.length : 0} top-level entities</div>
       <h4>How to edit</h4><div class="muted">Click something to select it, then drag the gizmo or type exact values here.
       With <b>Live save</b> on, every change is written straight into <b>${esc(fileName)}</b>.<br><br>
-      W move · E rotate · F focus · Del delete<br>Ctrl+D duplicate · Ctrl+Z undo · Ctrl+Y redo · Ctrl+S save</div>`
+      W move · E rotate · F focus · A fit all · +/− zoom<br>Scroll zooms to the pointer · double-click to zoom to a spot<br>Del delete · Ctrl+D duplicate · Ctrl+Z undo · Ctrl+Y redo · Ctrl+S save</div>`
       : `<h4>Getting started</h4><div class="muted">1. Drop your <code>.world</code> file in the middle.<br>2. (Optional) Drop your workspace or models folder too, so meshes and <code>model://</code> includes are shown.<br>3. Edit, and the file updates.</div>`;
     return;
   }
@@ -865,6 +889,9 @@ addEventListener('keydown', ev => {
   else if (k === 'w') setMode('translate');
   else if (k === 'e') setMode('rotate');
   else if (k === 'f') focusSel();
+  else if (k === 'a' || k === 'home') frameAll();
+  else if (k === '+' || k === '=') zoomBy(.8);
+  else if (k === '-' || k === '_') zoomBy(1.25);
   else if (k === 'escape') select(null);
   else if ((k === 'delete' || k === 'backspace') && e && e.el) edit(() => { removePretty(e.el); return { select: '' }; });
 });
