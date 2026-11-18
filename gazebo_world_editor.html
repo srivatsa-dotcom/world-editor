@@ -55,6 +55,7 @@ code{background:#16191d;padding:1px 4px;border-radius:4px}
   <button id="bMove" class="on" title="Move (W)">Move</button><button id="bRot" title="Rotate (E)">Rotate</button>
   <button id="bFit" title="Show the whole world (A)">Fit all</button>
   <button id="bSpace" title="Gizmo axes: world or local">World axes</button>
+  <label title="Mouse-wheel zoom speed">Zoom <input type="range" id="zspeed" min="0.2" max="3" step="0.1" value="1" style="width:70px;vertical-align:middle"></label>
   <label title="Snap 0.1 m / 15°"><input type="checkbox" id="snap"> Snap</label>
   <span class="sep"></span>
   <button id="bUndo" title="Undo (Ctrl+Z)">Undo</button><button id="bRedo" title="Redo (Ctrl+Y)">Redo</button>
@@ -417,18 +418,23 @@ function cursorPoint(clientX, clientY) {
   if (g && g.distanceTo(camera.position) < 2000) return { p: g, real: true };
   return { p: zRay.ray.at(Math.max(1, camera.position.distanceTo(orbit.target)), new THREE.Vector3()), real: false };
 }
+const zoomPending = new THREE.Vector3();            // movement still to be applied (smoothed over a few frames)
+let zoomSpeed = 1;
+try { zoomSpeed = parseFloat(localStorage.getItem('gwe.zoomSpeed')) || 1; } catch {}
 function zoomAt(clientX, clientY, amount) {          // amount > 0 = zoom in
   const { p, real } = cursorPoint(clientX, clientY);
-  const dir = zRay.ray.direction.clone(), dist = camera.position.distanceTo(p);
-  let move = dist * (1 - Math.exp(-amount));
-  if (amount > 0) move = real ? Math.min(move, Math.max(0, dist - .05)) : Math.max(move, .1);   // stop 5 cm before a surface
-  camera.position.addScaledVector(dir, move); orbit.target.addScaledVector(dir, move);
+  const dir = zRay.ray.direction.clone();
+  const dist = camera.position.distanceTo(p) - zoomPending.dot(dir);              // distance left after pending moves
+  const ref = Math.min(dist, Math.max(1, camera.position.distanceTo(orbit.target) * 1.5)); // don't leap when pointing at far walls
+  let move = ref * (1 - Math.exp(-amount));
+  if (amount > 0) move = real ? Math.min(move, Math.max(0, dist - .05)) : Math.max(move, .05);  // stop 5 cm before a surface
+  zoomPending.addScaledVector(dir, move);
 }
 renderer.domElement.addEventListener('wheel', ev => {
   ev.preventDefault();                                // also stops trackpad pinch from zooming the whole page
   let dy = ev.deltaY * (ev.deltaMode === 1 ? 33 : ev.deltaMode === 2 ? 400 : 1);
-  dy = Math.max(-300, Math.min(300, dy));
-  zoomAt(ev.clientX, ev.clientY, -dy * (ev.ctrlKey ? .006 : .0018));
+  dy = Math.max(-120, Math.min(120, dy));             // one mouse-wheel notch ≈ 100
+  zoomAt(ev.clientX, ev.clientY, -dy * (ev.ctrlKey ? .004 : .0011) * zoomSpeed);
 }, { passive: false });
 // double-click: orbit around / zoom to the point you clicked
 renderer.domElement.addEventListener('dblclick', ev => {
@@ -437,6 +443,7 @@ renderer.domElement.addEventListener('dblclick', ev => {
   const h = ray.intersectObjects(worldRoot.children, true).find(h => h.object.isMesh);
   const pt = h ? h.point : ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), new THREE.Vector3());
   if (!pt) return;
+  zoomPending.set(0, 0, 0);
   const off = camera.position.clone().sub(orbit.target);
   orbit.target.copy(pt); camera.position.copy(pt).add(off.multiplyScalar(.5));
 });
@@ -451,6 +458,10 @@ new ResizeObserver(resize).observe(view);
 let selBox = null, groups = new Map(), selected = null, firstLoad = true;
 let lastNear = 0;
 renderer.setAnimationLoop(() => {
+  if (zoomPending.lengthSq() > 1e-12) {
+    const step = zoomPending.lengthSq() < 1e-6 ? zoomPending.clone() : zoomPending.clone().multiplyScalar(.22);
+    camera.position.add(step); orbit.target.add(step); zoomPending.sub(step);
+  }
   orbit.update();
   // adapt the clipping planes to the zoom level so close-ups don't get cut off
   const d = camera.position.distanceTo(orbit.target), near = Math.min(1, Math.max(.002, d / 400));
@@ -573,6 +584,7 @@ function commitGizmo() {
   edit(() => writePose(e.el, pose));
 }
 function fit(box) {
+  zoomPending.set(0, 0, 0);
   const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3()).length() || 2;
   const dir = camera.position.clone().sub(orbit.target).normalize();
   orbit.target.copy(c); camera.position.copy(c).addScaledVector(dir, s * 1.1 + 1);
@@ -580,6 +592,8 @@ function fit(box) {
 }
 function zoomBy(f) { const r = renderer.domElement.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, -Math.log(f)); }
 $('#bFit').onclick = () => frameAll();
+$('#zspeed').value = zoomSpeed;
+$('#zspeed').oninput = ev => { zoomSpeed = parseFloat(ev.target.value) || 1; try { localStorage.setItem('gwe.zoomSpeed', zoomSpeed); } catch {} };
 function frameAll() { const b = new THREE.Box3(); worldRoot.updateMatrixWorld(true); worldRoot.traverse(o => { if (o.isMesh && !o.userData.isPlane) b.expandByObject(o); }); if (!b.isEmpty()) fit(b); }
 function focusSel() { const g = groups.get(selected); if (g) { const b = new THREE.Box3().setFromObject(g); if (!b.isEmpty()) fit(b); } }
 
