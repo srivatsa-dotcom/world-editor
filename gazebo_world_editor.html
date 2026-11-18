@@ -49,6 +49,7 @@ code{background:#16191d;padding:1px 4px;border-radius:4px}
  <div id="top">
   <button id="bOpen" title="Open a .world / .sdf file">Open world</button>
   <button id="bFolder" title="Add your workspace or models folder so model:// and package:// meshes can be shown">Add models folder</button>
+  <button id="bMeshes" title="Add individual mesh / texture files (.stl .dae .obj .glb .png …)">Add mesh files</button>
   <span class="sep"></span>
   <span class="title" id="file">No file</span><span class="pill idle" id="status">Drop a world file</span>
   <span class="sp"></span>
@@ -71,10 +72,10 @@ code{background:#16191d;padding:1px 4px;border-radius:4px}
  </div>
  <div id="view">
   <div id="toast"></div>
-  <div id="dragcover">Drop world file (.world / .sdf) or a models / workspace folder</div>
+  <div id="dragcover">Drop a .world / .sdf file, mesh files (.stl .dae .obj .glb), or a models / workspace folder</div>
   <div id="empty"><div class="drop">
     <h2>Drop your Gazebo world here</h2>
-    <p class="muted">A <code>.world</code> or <code>.sdf</code> file. You can also drop your workspace or models folder so meshes and <code>model://</code> includes show up.</p>
+    <p class="muted">A <code>.world</code> or <code>.sdf</code> file. Drop your mesh files (<code>.stl .dae .obj .glb</code>) or your workspace / models folder too, so meshes and <code>model://</code> includes show up.</p>
     <div class="btns" style="justify-content:center">
       <button class="primary" id="eOpen">Open world file</button>
       <button id="eFolder">Open folder</button>
@@ -87,7 +88,8 @@ code{background:#16191d;padding:1px 4px;border-radius:4px}
  </div>
  <div id="right"><div id="props"></div></div>
 </div>
-<input type="file" id="fileInput" accept=".world,.sdf,.xml" hidden>
+<input type="file" id="fileInput" hidden>
+<input type="file" id="meshInput" multiple hidden>
 <input type="file" id="dirInput" webkitdirectory hidden>
 
 <script type="module">
@@ -156,6 +158,22 @@ async function addFolderFiles(files) {
   toast(`Indexed ${files.length} files (${IX.modelDirs.size} models, ${IX.pkgDirs.size} packages)`);
   await afterFolder();
 }
+const MESH_RE = /\.(stl|dae|obj|mtl|glb|gltf|bin|png|jpe?g|tga|bmp|tif|tiff)$/i;
+async function addLooseFiles(list) {          // list of {name, getFile, handle?}
+  let n = 0;
+  for (const it of list) { addFile('files/' + it.name, it.getFile, it.handle); n++; }
+  if (!n) return;
+  if (!IX.roots.includes('files')) IX.roots.push('files');
+  suffixCache.clear(); meshCache.clear(); modelCache.clear();
+  toast(`Added ${n} mesh/texture file${n > 1 ? 's' : ''}`);
+  renderSide(); if (doc) refresh();
+}
+async function pickMeshes() {
+  if (FS_API) {
+    try { const hs = await window.showOpenFilePicker({ multiple: true }); await addLooseFiles(hs.map(h => ({ name: h.name, getFile: () => h.getFile(), handle: h }))); }
+    catch (e) { if (e.name !== 'AbortError') toast(e.message); }
+  } else $('#meshInput').click();
+}
 async function afterFolder() {
   if (doc) { if (!worldPath) linkWorldPath(); refresh(); updateStatus(); }
   else if (IX.worlds.length === 1) openIndexedWorld(IX.worlds[0]);
@@ -175,6 +193,7 @@ function suffixLookup(raw) {
     const suf = '/' + segs.slice(-k).join('/').toLowerCase();
     for (const [low, real] of IX.lower) if (low.endsWith(suf)) { found = real; break; }
   }
+  if (!found) { const fn = segs[segs.length - 1].toLowerCase(); const loose = IX.lower.get('files/' + fn); if (loose) found = loose; }
   suffixCache.set(key, found); return found;
 }
 const textCache = new Map();
@@ -206,6 +225,7 @@ function resolveFile(uri, baseDir) {
     if (baseDir != null && !/^([a-zA-Z]:)?[\/\\]/.test(raw)) p = join(baseDir, raw);
     if (!p || !lookup(p)) p = suffixLookup(raw);
   }
+  if (!p || !lookup(p)) p = suffixLookup(uri.replace(/^[a-z]+:\/\//i, ''));   // last resort: match by path ending / file name
   return p ? lookup(p) : null;
 }
 const modelCache = new Map();
@@ -725,7 +745,7 @@ async function openIndexedWorld(p) {
 }
 async function pickWorld() {
   if (FS_API) {
-    try { const [h] = await window.showOpenFilePicker({ types: [{ description: 'Gazebo world', accept: { 'application/xml': ['.world', '.sdf', '.xml'] } }] }); await openHandle(h, null); }
+    try { const [h] = await window.showOpenFilePicker(); await openHandle(h, null); }   // no type filter: Linux file dialogs hide .world files otherwise
     catch (e) { if (e.name !== 'AbortError') toast(e.message); }
   } else $('#fileInput').click();
 }
@@ -735,6 +755,7 @@ async function pickFolder() {
   } else $('#dirInput').click();
 }
 $('#fileInput').onchange = async ev => { const f = ev.target.files[0]; if (f) loadWorld(await f.text(), f.name, null, null); ev.target.value = ''; };
+$('#meshInput').onchange = ev => { addLooseFiles([...ev.target.files].map(f => ({ name: f.name, getFile: async () => f }))); ev.target.value = ''; };
 $('#dirInput').onchange = ev => { if (ev.target.files.length) addFolderFiles([...ev.target.files]); ev.target.value = ''; };
 
 async function writeTo(h) {
@@ -789,14 +810,17 @@ addEventListener('drop', async e => {
   const pending = items.map(i => i.getAsFileSystemHandle ? i.getAsFileSystemHandle() : Promise.resolve(null)); // must start synchronously
   const files = items.map(i => i.getAsFile());
   const handles = await Promise.all(pending);
-  let world = null;
+  let world = null; const loose = [];
   for (let k = 0; k < items.length; k++) {
     const h = handles[k], f = files[k];
     if (h && h.kind === 'directory') await addFolderHandle(h);
     else if (h && h.kind === 'file' && /\.(world|sdf|xml)$/i.test(h.name)) world = { h };
     else if (!h && f && /\.(world|sdf|xml)$/i.test(f.name)) world = { f };
+    else if (h && h.kind === 'file' && MESH_RE.test(h.name)) loose.push({ name: h.name, getFile: () => h.getFile(), handle: h });
+    else if (!h && f && MESH_RE.test(f.name)) loose.push({ name: f.name, getFile: async () => f });
     else if (!h && f && !f.type && f.size % 4096 === 0) toast('Folders can be dropped in Chrome/Edge only. Use “Add models folder”.');
   }
+  if (loose.length) await addLooseFiles(loose);
   if (world && world.h) openHandle(world.h, null);
   else if (world && world.f) loadWorld(await world.f.text(), world.f.name, null, null);
 });
@@ -819,7 +843,7 @@ function renderSide() {
     (S.filter(e => !f || e.key.toLowerCase().includes(f)).map(e => `<div class="item${e.key === selected ? ' sel' : ''}" data-key="${esc(e.key)}"><span class="k">${e.kind}</span><span>${esc(e.key)}</span></div>`).join('') || '<div class="muted">Nothing here</div>');
   const ws = IX.worlds.slice(0, 60);
   $('#worlds').innerHTML = ws.length ? '<h4>Worlds in folder</h4>' + ws.map(p => `<div class="item" data-world="${esc(p)}" title="${esc(p)}"><span class="k">open</span><span>${esc(p.split('/').pop())}</span></div>`).join('') : '';
-  $('#folders').innerHTML = IX.roots.length ? '<h4>Model folders</h4>' + IX.roots.map(r => `<div class="muted">📁 ${esc(r)}</div>`).join('') + `<div class="muted" style="font-size:11px">${IX.modelDirs.size} models · ${IX.pkgDirs.size} packages</div>` : '';
+  $('#folders').innerHTML = IX.roots.length ? '<h4>Models &amp; meshes</h4>' + IX.roots.map(r => r === 'files' ? `<div class="muted">📄 ${[...IX.files.keys()].filter(k => k.startsWith('files/')).length} mesh/texture files</div>` : `<div class="muted">📁 ${esc(r)}</div>`).join('') + `<div class="muted" style="font-size:11px">${IX.modelDirs.size} models · ${IX.pkgDirs.size} packages</div>` : '';
   const w = [...new Set(warnings)];
   $('#warns').innerHTML = w.length ? '<h4>Warnings</h4>' + w.slice(0, 40).map(x => `<div class="warn">${esc(x)}</div>`).join('') + (IX.roots.length ? '' : '<div class="muted" style="font-size:12px;margin-top:6px">Tip: drop your workspace or models folder here so these can be found.</div>') : '';
 }
@@ -911,6 +935,7 @@ $('#auto').onchange = ev => { liveSave = ev.target.checked; if (liveSave && dirt
 $('#bSave').onclick = save; $('#bSaveAs').onclick = saveAs; $('#bDownload').onclick = download;
 $('#bOpen').onclick = $('#eOpen').onclick = pickWorld;
 $('#bFolder').onclick = $('#eFolder').onclick = pickFolder;
+$('#bMeshes').onclick = pickMeshes;
 $('#ePaste').onclick = pasteXml;
 $('#eNew').onclick = () => loadWorld('<?xml version="1.0" ?>\n<sdf version="1.6">\n  <world name="default">\n    <include>\n      <uri>model://ground_plane</uri>\n    </include>\n    <include>\n      <uri>model://sun</uri>\n    </include>\n  </world>\n</sdf>\n', 'new_world.world', null, null);
 document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => doc ? edit(() => addShape(b.dataset.add)) : toast('Open a world first'));
