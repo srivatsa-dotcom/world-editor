@@ -404,9 +404,32 @@ const scene = new THREE.Scene(); scene.background = new THREE.Color(0xb9c3cd);
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 5000); camera.up.set(0, 0, 1); camera.position.set(9, -9, 7);
 const orbit = new OrbitControls(camera, renderer.domElement);
 orbit.enableDamping = true; orbit.dampingFactor = .15;
-orbit.zoomToCursor = true;          // scroll zooms toward the mouse pointer, not the screen centre
-orbit.zoomSpeed = 1.4; orbit.minDistance = .05; orbit.maxDistance = 5000;
+orbit.enableZoom = false;           // zoom is handled below (Gazebo-style: toward the point under the mouse)
 orbit.screenSpacePanning = true;
+// ---- zoom: move the camera toward / away from whatever is under the mouse pointer
+const groundZ0 = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), zRay = new THREE.Raycaster();
+function cursorPoint(clientX, clientY) {
+  const r = renderer.domElement.getBoundingClientRect();
+  zRay.setFromCamera(new THREE.Vector2((clientX - r.left) / r.width * 2 - 1, -(clientY - r.top) / r.height * 2 + 1), camera);
+  const h = zRay.intersectObjects(worldRoot.children, true).find(h => h.object.isMesh && h.object.visible);
+  if (h) return { p: h.point, real: true };
+  const g = zRay.ray.intersectPlane(groundZ0, new THREE.Vector3());
+  if (g && g.distanceTo(camera.position) < 2000) return { p: g, real: true };
+  return { p: zRay.ray.at(Math.max(1, camera.position.distanceTo(orbit.target)), new THREE.Vector3()), real: false };
+}
+function zoomAt(clientX, clientY, amount) {          // amount > 0 = zoom in
+  const { p, real } = cursorPoint(clientX, clientY);
+  const dir = zRay.ray.direction.clone(), dist = camera.position.distanceTo(p);
+  let move = dist * (1 - Math.exp(-amount));
+  if (amount > 0) move = real ? Math.min(move, Math.max(0, dist - .05)) : Math.max(move, .1);   // stop 5 cm before a surface
+  camera.position.addScaledVector(dir, move); orbit.target.addScaledVector(dir, move);
+}
+renderer.domElement.addEventListener('wheel', ev => {
+  ev.preventDefault();                                // also stops trackpad pinch from zooming the whole page
+  let dy = ev.deltaY * (ev.deltaMode === 1 ? 33 : ev.deltaMode === 2 ? 400 : 1);
+  dy = Math.max(-300, Math.min(300, dy));
+  zoomAt(ev.clientX, ev.clientY, -dy * (ev.ctrlKey ? .006 : .0018));
+}, { passive: false });
 // double-click: orbit around / zoom to the point you clicked
 renderer.domElement.addEventListener('dblclick', ev => {
   const r = renderer.domElement.getBoundingClientRect();
@@ -555,7 +578,7 @@ function fit(box) {
   orbit.target.copy(c); camera.position.copy(c).addScaledVector(dir, s * 1.1 + 1);
   lastNear = 0;
 }
-function zoomBy(f) { const off = camera.position.clone().sub(orbit.target).multiplyScalar(f); if (off.length() > .05) camera.position.copy(orbit.target).add(off); }
+function zoomBy(f) { const r = renderer.domElement.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, -Math.log(f)); }
 $('#bFit').onclick = () => frameAll();
 function frameAll() { const b = new THREE.Box3(); worldRoot.updateMatrixWorld(true); worldRoot.traverse(o => { if (o.isMesh && !o.userData.isPlane) b.expandByObject(o); }); if (!b.isEmpty()) fit(b); }
 function focusSel() { const g = groups.get(selected); if (g) { const b = new THREE.Box3().setFromObject(g); if (!b.isEmpty()) fit(b); } }
