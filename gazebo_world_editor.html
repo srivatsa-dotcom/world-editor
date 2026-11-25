@@ -381,7 +381,7 @@ async function addFolderHandle(dh) {
   const cnt = { n: 0 }; await walk(dh, dh.name, 0, cnt); await finishIndex(dh.name);
   syncAssets(); storeFiles([...IX.files.keys()].filter(k => k.startsWith(dh.name + '/')));
   toast(`Indexed ${cnt.n} files from “${dh.name}” (${IX.modelDirs.size} models, ${IX.pkgDirs.size} packages)`);
-  await afterFolder();
+  await afterFolder(dh.name);
 }
 async function addFolderFiles(files) {
   let root = '';
@@ -389,7 +389,7 @@ async function addFolderFiles(files) {
   await finishIndex(root || 'folder');
   syncAssets(); storeFiles([...IX.files.keys()].filter(k => k.startsWith((root || 'folder') + '/')));
   toast(`Indexed ${files.length} files (${IX.modelDirs.size} models, ${IX.pkgDirs.size} packages)`);
-  await afterFolder();
+  await afterFolder(root || 'folder');
 }
 const MESH_RE = /\.(stl|dae|obj|mtl|glb|gltf|bin|png|jpe?g|tga|bmp|tif|tiff)$/i;
 async function addLooseFiles(list) {          // list of {name, getFile, handle?}
@@ -403,7 +403,7 @@ async function addLooseFiles(list) {          // list of {name, getFile, handle?
   renderSide(); if (doc) refresh();
 }
 const isZip = n => /\.zip$/i.test(n);
-async function addZip(file) {                         // unpack a .zip in the browser and use it like a dropped folder
+async function addZip(file, open = !doc) {                         // unpack a .zip in the browser and use it like a dropped folder
   const label = file.name;
   setStatus('Unpacking ' + label + '…', 'dirty'); libProgress('Unpacking ' + label + '…'); toast('Unpacking ' + label + '…');
   let out;
@@ -427,24 +427,46 @@ async function addZip(file) {                         // unpack a .zip in the br
   const meshes = paths.filter(p => MESH_ONLY.test(p)).length, worldsIn = paths.filter(p => /\.(world|sdf)$/i.test(p) && !/model\.sdf$/i.test(p)).length;
   toast(`Unpacked ${label}: ${paths.length} files · ${IX.modelDirs.size} models · ${meshes} meshes${worldsIn ? ` · ${worldsIn} world${worldsIn === 1 ? '' : 's'}` : ''}`);
   libProgress(''); meshCache.clear();
-  if (!doc && worldsIn > 1) document.querySelector('.tabs [data-tab="lib"]').click();
-  await afterFolder();
+  await afterFolder(root, open);
 }
-async function pickZip() {
+async function pickZip(open = true) {
   const i = document.createElement('input'); i.type = 'file'; i.accept = '.zip,application/zip'; i.multiple = true;
-  i.onchange = async () => { for (const f of i.files) await addZip(f); }; i.click();
+  i.onchange = async () => { const fs = [...i.files]; for (const [k, f] of fs.entries()) await addZip(f, open && k === fs.length - 1); }; i.click();
 }
 async function pickMeshes() {
   if (FS_API) {
-    try { const hs = await window.showOpenFilePicker({ multiple: true }); for (const h of hs.filter(h => isZip(h.name))) await addZip(await h.getFile()); const rest = hs.filter(h => !isZip(h.name)); if (rest.length) await addLooseFiles(rest.map(h => ({ name: h.name, getFile: () => h.getFile(), handle: h }))); }
+    try { const hs = await window.showOpenFilePicker({ multiple: true }); for (const h of hs.filter(h => isZip(h.name))) await addZip(await h.getFile(), false); const rest = hs.filter(h => !isZip(h.name)); if (rest.length) await addLooseFiles(rest.map(h => ({ name: h.name, getFile: () => h.getFile(), handle: h }))); }
     catch (e) { if (e.name !== 'AbortError') toast(e.message); }
   } else $('#meshInput').click();
 }
-async function afterFolder() {
-  if (doc) { if (!worldPath) linkWorldPath(); refresh(); updateStatus(); }
-  else if (IX.worlds.length === 1) openIndexedWorld(IX.worlds[0]);
-  else if (IX.worlds.length) { $('#empty').style.display = 'none'; setStatus('Pick a world on the left', 'idle'); renderSide(); }
-  else updateStatus();
+let lastFolderWorlds = [];
+async function afterFolder(root, open = !doc) {
+  const mine = IX.worlds.filter(p => !root || p === root || p.startsWith(root + '/'));
+  lastFolderWorlds = mine.map(p => 'w:' + p.split('/').pop());
+  let added = 0;
+  for (const p of mine.slice(0, 60)) { try { if (await addSavedWorld(p.split('/').pop(), await readText(p))) added++; } catch {} }
+  if (added) { renderWorlds(); toast(`${added} world${added === 1 ? '' : 's'} from ${root || 'the folder'} added to the Worlds tab`); }
+  if (open && mine.length === 1) return openIndexedWorld(mine[0]);
+  if (open && mine.length > 1) return chooseWorld(mine, root);
+  if (doc) { if (!worldPath) linkWorldPath(); refresh(); }
+  updateStatus();
+}
+async function addSavedWorld(name, text) {          // put a world into the Worlds tab without opening it
+  const id = 'w:' + name;
+  if (!text || savedWorlds.some(w => w.id === id)) return false;
+  const w = { id, name, text, created: Date.now(), updated: Date.now(), count: (text.match(/<(model|include|light)[\s>]/g) || []).length };
+  savedWorlds.unshift(w);
+  try { await DB.put('worlds', id, w); } catch {}
+  return true;
+}
+function chooseWorld(paths, root) {
+  $('#modal').innerHTML = `<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="cwTitle"><h2 id="cwTitle">${paths.length} worlds in ${esc(root || 'this folder')}</h2>
+    <p class="muted" style="margin-top:0">Pick one to open. All of them are also in the Worlds tab, so you can open or merge the others later.</p>
+    <div class="btns" style="flex-direction:column;align-items:stretch">${paths.slice(0, 60).map(p => `<button data-cw="${esc(p)}" style="justify-content:flex-start">${icon('world')}<span style="overflow:hidden;text-overflow:ellipsis">${esc(p.split('/').pop())}</span><span class="fine" style="margin-left:auto">${esc(p.split('/').slice(0, -1).join('/'))}</span></button>`).join('')}</div>
+    <div class="btns" style="margin-top:14px;justify-content:flex-end"><button id="cwClose">Close</button></div></div>`;
+  $('#modal').style.display = 'grid';
+  $('#cwClose').onclick = closeModal;
+  $('#modal').onclick = e => { const b = e.target.closest('[data-cw]'); if (b) { closeModal(); openIndexedWorld(b.dataset.cw); } else if (e.target.id === 'modal') closeModal(); };
 }
 function linkWorldPath() { // find the open world inside the indexed folder so relative paths resolve
   const hits = IX.worlds.filter(p => p.split('/').pop() === fileName);
@@ -891,7 +913,7 @@ async function refresh() {
   const ents = await buildEntities();
   if (t !== buildTok) return;
   if (firstLoad) {                                       // hide ceilings so you can see inside buildings
-    const ceil = ents.filter(e => /ceiling/i.test(e.key + ' ' + (e.uri || '')));
+    const ceil = ents.filter(e => e.kind !== 'light' && /ceiling(?!_?light)/i.test(e.key + ' ' + (e.uri || '')));
     ceil.forEach(e => hiddenKeys.add(e.key));
     if (ceil.length) setTimeout(() => toast(`Hid ${ceil.length === 1 ? 'the ceiling' : ceil.length + ' ceilings'} so you can see inside. Use the eye in the Scene list to show ${ceil.length === 1 ? 'it' : 'them'}.`), 600);
   }
@@ -1084,7 +1106,7 @@ async function openIndexedWorld(p) {
 }
 async function pickWorld() {
   if (FS_API) {
-    try { const [h] = await window.showOpenFilePicker(); if (isZip(h.name)) await addZip(await h.getFile()); else await openHandle(h, null); }   // no type filter: Linux file dialogs hide .world files otherwise
+    try { const [h] = await window.showOpenFilePicker(); if (isZip(h.name)) await addZip(await h.getFile(), true); else await openHandle(h, null); }   // no type filter: Linux file dialogs hide .world files otherwise
     catch (e) { if (e.name !== 'AbortError') toast(e.message); }
   } else $('#fileInput').click();
 }
@@ -1093,8 +1115,8 @@ async function pickFolder() {
     try { await addFolderHandle(await window.showDirectoryPicker({ mode: 'readwrite' })); } catch (e) { if (e.name !== 'AbortError') toast(e.message); }
   } else $('#dirInput').click();
 }
-$('#fileInput').onchange = async ev => { const f = ev.target.files[0]; ev.target.value = ''; if (!f) return; if (isZip(f.name)) return addZip(f); loadWorld(await f.text(), f.name, null, null); };
-$('#meshInput').onchange = async ev => { const fs = [...ev.target.files]; ev.target.value = ''; for (const f of fs.filter(f => isZip(f.name))) await addZip(f); const rest = fs.filter(f => !isZip(f.name)); if (rest.length) addLooseFiles(rest.map(f => ({ name: f.name, getFile: async () => f }))); };
+$('#fileInput').onchange = async ev => { const f = ev.target.files[0]; ev.target.value = ''; if (!f) return; if (isZip(f.name)) return addZip(f, true); loadWorld(await f.text(), f.name, null, null); };
+$('#meshInput').onchange = async ev => { const fs = [...ev.target.files]; ev.target.value = ''; for (const f of fs.filter(f => isZip(f.name))) await addZip(f, false); const rest = fs.filter(f => !isZip(f.name)); if (rest.length) addLooseFiles(rest.map(f => ({ name: f.name, getFile: async () => f }))); };
 $('#dirInput').onchange = ev => { if (ev.target.files.length) addFolderFiles([...ev.target.files]); ev.target.value = ''; };
 
 async function writeTo(h) {
@@ -1467,7 +1489,7 @@ $('#lib').addEventListener('click', e => {
 });
 $('#lib').addEventListener('dragstart', e => { const c = e.target.closest('[data-asset]'); if (c) { e.dataTransfer.setData('application/x-gwe-asset', c.dataset.asset); e.dataTransfer.effectAllowed = 'copy'; } });
 $('#libFilter').addEventListener('input', renderLibrary);
-$('#lFolder').onclick = pickFolder; $('#lMeshes').onclick = pickMeshes; $('#lZip').onclick = pickZip;
+$('#lFolder').onclick = pickFolder; $('#lMeshes').onclick = pickMeshes; $('#lZip').onclick = () => pickZip(false);
 $('#libClear').onclick = async () => {
   if (!confirm('Remove every model, mesh and file from the library? Saved worlds are kept.')) return;
   await Promise.all([DB.clear('files'), DB.clear('assets'), DB.put('meta', 'roots', [])]); location.reload();
@@ -1546,49 +1568,61 @@ $('#wWalls').onclick = () => newWorld('walls_world.world', true);
 $('#wMerge').onclick = () => doc ? openMerge(null) : toast('Open a world first, then merge another into it.');
 
 // =====================================================================  merge two worlds
-let mergeSrc = null;
 function openMerge(w) {
   if (!doc) return toast('Open a world first, then merge another into it.');
-  mergeSrc = w ? { name: w.name, text: w.text } : null;
-  const others = savedWorlds.filter(x => !curWorld || x.id !== curWorld.id);
+  const opts = () => savedWorlds.filter(x => !curWorld || x.id !== curWorld.id);
   $('#modal').innerHTML = `<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="mTitle">
     <h2 id="mTitle">Merge a world into ${esc(fileName)}</h2>
     <p class="muted" style="margin-top:0">Its models, included models and lights are copied into this world. Physics and plugins of this world stay as they are.</p>
-    <label class="f">World to merge in</label>
-    <div style="display:flex;gap:8px"><select id="mSel">${others.map(x => `<option value="${esc(x.id)}" ${w && x.id === w.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="__file" ${!others.length ? 'selected' : ''}>Choose a file…</option></select></div>
-    <div id="mFile" class="fine" style="margin-top:6px"></div>
+    <label class="f" for="mSel">World to merge in</label>
+    <div style="display:flex;gap:8px"><select id="mSel"></select><button id="mFileBtn" title="A .world, .sdf or .zip file from your computer">${icon('file')}Choose file…</button></div>
+    <div id="mHint" class="fine" style="margin-top:6px"></div>
     <div class="fl3">
-      <div><label class="f">Move by X (m)</label><input id="mX" type="number" step="0.5" value="0"></div>
-      <div><label class="f">Move by Y (m)</label><input id="mY" type="number" step="0.5" value="0"></div>
-      <div><label class="f">Move by Z (m)</label><input id="mZ" type="number" step="0.5" value="0"></div>
-      <div><label class="f">Turn (°)</label><input id="mYaw" type="number" step="15" value="0"></div>
+      <div><label class="f" for="mX">Move by X (m)</label><input id="mX" type="number" step="0.5" value="0"></div>
+      <div><label class="f" for="mY">Move by Y (m)</label><input id="mY" type="number" step="0.5" value="0"></div>
+      <div><label class="f" for="mZ">Move by Z (m)</label><input id="mZ" type="number" step="0.5" value="0"></div>
+      <div><label class="f" for="mYaw">Turn (°)</label><input id="mYaw" type="number" step="15" value="0"></div>
     </div>
-    <label class="f">Name prefix for merged models</label><input id="mPre" value="">
+    <label class="f" for="mPre">Name prefix for merged models</label><input id="mPre" value="">
     <label class="tog" style="margin-top:12px"><input type="checkbox" id="mSkip" checked><span>Skip its ground plane and sun if this world already has them</span></label>
     <div class="btns" style="margin-top:16px;justify-content:flex-end"><button id="mCancel">Cancel</button><button id="mGo" class="primary">Merge worlds</button></div></div>`;
   $('#modal').style.display = 'grid';
-  const setPre = () => { const src = srcFor(); $('#mPre').value = src ? src.name.replace(/\.(world|sdf)$/i, '').replace(/[^\w-]/g, '_') + '_' : ''; };
-  const srcFor = () => { const v = $('#mSel').value; if (v === '__file') return mergeSrc && mergeSrc.file ? mergeSrc : null; const x = savedWorlds.find(s => s.id === v); return x ? { name: x.name, text: x.text } : null; };
-  $('#mSel').onchange = async () => {
-    if ($('#mSel').value === '__file') {
-      const f = await pickTextFile(); if (!f) return;
-      mergeSrc = { name: f.name, text: await f.text(), file: true }; $('#mFile').textContent = 'File: ' + f.name;
-    } else $('#mFile').textContent = '';
+  const fill = sel => {
+    const list = opts();
+    $('#mSel').innerHTML = list.map(x => `<option value="${esc(x.id)}" ${sel && x.id === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+    $('#mSel').disabled = !list.length; $('#mGo').disabled = !list.length;
+    $('#mHint').textContent = list.length ? '' : 'No other saved worlds yet. Choose a .world, .sdf or .zip file.';
     setPre();
   };
-  setPre();
-  if ($('#mSel').value === '__file') $('#mFile').textContent = 'Pick the file with the list above.';
+  const srcFor = () => savedWorlds.find(s => s.id === $('#mSel').value);
+  const setPre = () => { const src = srcFor(); $('#mPre').value = src ? src.name.replace(/\.(world|sdf)$/i, '').replace(/[^\w-]/g, '_') + '_' : ''; };
+  fill(w && w.id);
+  $('#mSel').onchange = setPre;
+  $('#mFileBtn').onclick = async () => {
+    const f = await pickTextFile(); if (!f) return;
+    const before = new Set(savedWorlds.map(x => x.id));
+    lastFolderWorlds = [];
+    if (isZip(f.name)) await addZip(f, false);
+    else { const text = await f.text(); try { parseXml(text); } catch (e) { return toast('Could not read ' + f.name + ': ' + e.message); } if (!(await addSavedWorld(f.name, text))) { const ex = savedWorlds.find(x => x.id === 'w:' + f.name); if (ex) { ex.text = text; ex.updated = Date.now(); DB.put('worlds', ex.id, ex).catch(() => {}); } } }
+    const pick = id => savedWorlds.find(x => x.id === id && (!curWorld || x.id !== curWorld.id));
+    const fresh = savedWorlds.find(x => !before.has(x.id)) || lastFolderWorlds.map(pick).find(Boolean) || pick('w:' + f.name);
+    fill(fresh && fresh.id); renderWorlds();
+    if (!fresh) toast('No world file found in ' + f.name);
+  };
   $('#mCancel').onclick = closeModal;
   $('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
   $('#mGo').onclick = () => {
     const src = srcFor(); if (!src) return toast('Choose a world to merge in.');
-    const opts = { dx: +$('#mX').value || 0, dy: +$('#mY').value || 0, dz: +$('#mZ').value || 0, yaw: (+$('#mYaw').value || 0) * D2R, prefix: $('#mPre').value.trim().replace(/[^\w.-]/g, '_'), skipEnv: $('#mSkip').checked };
-    let count = 0;
-    edit(() => { count = mergeWorld(src.text, opts); });
+    const o = { dx: +$('#mX').value || 0, dy: +$('#mY').value || 0, dz: +$('#mZ').value || 0, yaw: (+$('#mYaw').value || 0) * D2R, prefix: $('#mPre').value.trim().replace(/[^\w.-]/g, '_'), skipEnv: $('#mSkip').checked };
+    let count = 0, failed = null;
+    const before = serialize();
+    try { count = mergeWorld(src.text, o); } catch (e) { failed = e; doc = parseXml(before); }
+    if (failed) return toast('Could not merge: ' + failed.message);
+    undo.push(before); if (undo.length > 100) undo.shift(); redo = []; changed(); refresh();
     closeModal(); toast(`Merged ${count} item${count === 1 ? '' : 's'} from ${src.name}`);
-    setTimeout(frameAll, 400);
+    setTimeout(frameAll, 500);
   };
-  $('#mSel').focus();
+  (opts().length ? $('#mSel') : $('#mFileBtn')).focus();
 }
 function closeModal() { $('#modal').style.display = 'none'; $('#modal').innerHTML = ''; }
 function pickTextFile() {
@@ -1756,7 +1790,7 @@ async function goHome() {
 $('#bHome').onclick = goHome;
 $('#brandHome').onclick = goHome;
 $('#brandHome').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goHome(); } };
-$('#eZip').onclick = pickZip;
+$('#eZip').onclick = () => pickZip(true);
 
 // =====================================================================  toolbar & keys
 function setMode(m) { tc.setMode(m); $('#bMove').classList.toggle('on', m === 'translate'); $('#bRot').classList.toggle('on', m === 'rotate'); }
