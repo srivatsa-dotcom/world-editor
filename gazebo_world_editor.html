@@ -311,6 +311,7 @@ import {TransformControls} from 'three/addons/controls/TransformControls.js';
 import {STLLoader} from 'three/addons/loaders/STLLoader.js';
 import {ColladaLoader} from 'three/addons/loaders/ColladaLoader.js';
 import {OBJLoader} from 'three/addons/loaders/OBJLoader.js';
+import {MTLLoader} from 'three/addons/loaders/MTLLoader.js';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
 
@@ -753,9 +754,27 @@ function loadMesh(p, ext) {
       }
       const mgr = new THREE.LoadingManager(); mgr.setURLModifier(u => map.get(u) || map.get(decodeURI(u)) || u);
       const c = new ColladaLoader(mgr).parse(text, '');
+      c.scene.traverse(x => { if (x.isMesh && x.geometry && !x.geometry.attributes.normal) x.geometry.computeVertexNormals(); });  // like Gazebo: shade DAEs that have no normals
       const w = new THREE.Group(); w.rotation.x = Math.PI / 2; w.add(c.scene); return w;
     }
-    if (ext === 'obj') return new OBJLoader().parse(await readText(p));
+    if (ext === 'obj') {                              // OBJ + its .mtl materials and textures
+      const text = await readText(p), dir = dirname(p), loader = new OBJLoader();
+      const libs = [...text.matchAll(/^\s*mtllib\s+(.+?)\s*$/gm)].map(m => m[1]);
+      for (const lib of libs) {
+        const mp = resolveFile(lib, dir) || suffixLookup(lib) || lookup(join(dir, p.split('/').pop().replace(/\.obj$/i, '.mtl')));
+        if (!mp) { warnings.push(`Material file not found: ${lib} (for ${p.split('/').pop()})`); continue; }
+        const mtl = await readText(mp), mdir = dirname(mp), map = new Map();
+        for (const m of mtl.matchAll(/^\s*(?:map_\w+|bump|disp|norm|refl)\s+(?:-\S+\s+\S+\s+)*(.+?)\s*$/gim)) {
+          const rel = m[1].replace(/\\/g, '/'); const f = resolveFile(rel, mdir) || suffixLookup(rel.split('/').slice(-2).join('/')) || suffixLookup(rel.split('/').pop());
+          if (f) map.set(rel, await blobUrl(f));
+        }
+        const mgr = new THREE.LoadingManager(); mgr.setURLModifier(u => { for (const [rel, b] of map) if (u === rel || u.endsWith('/' + rel) || decodeURI(u).endsWith(rel)) return b; return u; });
+        const mats = new MTLLoader(mgr).parse(mtl, ''); mats.preload(); loader.setMaterials(mats);
+      }
+      const o = loader.parse(text);
+      o.traverse(x => { if (x.isMesh) { const ms = Array.isArray(x.material) ? x.material : [x.material]; ms.forEach(m => { if (m && m.isMeshPhongMaterial) m.side = THREE.DoubleSide; }); } });
+      return o;
+    }
     if (ext === 'glb' || ext === 'gltf') {
       const data = ext === 'glb' ? await readBuf(p) : await readText(p);
       const g = await new Promise((res, rej) => new GLTFLoader().parse(data, '', res, rej));
@@ -1321,6 +1340,12 @@ async function assetNode(a) {
   const n = await includeNode(el, false); warnings = keep;
   n.pose = [0, 0, 0, 0, 0, 0]; return n;
 }
+function texturesReady(obj, ms = 4000) {             // wait until every texture image has loaded (so pictures aren't black)
+  const imgs = [];
+  obj.traverse(o => { if (!o.isMesh) return; for (const m of [].concat(o.material || [])) for (const k of ['map', 'normalMap', 'emissiveMap', 'alphaMap']) if (m && m[k]) imgs.push(m[k]); });
+  const ok = t => t.image && (t.image.complete === undefined || t.image.complete) && (t.image.width || t.image.naturalWidth);
+  return new Promise(res => { const t0 = Date.now(); (function poll() { if (imgs.every(ok) || Date.now() - t0 > ms) return setTimeout(res, 30); setTimeout(poll, 60); })(); });
+}
 let thumbBusy = false;
 async function thumbQueue() {
   if (thumbBusy) return; thumbBusy = true;
@@ -1336,6 +1361,7 @@ async function thumbQueue() {
         buildNode(n, g, '__thumb');
         await Promise.allSettled(meshPaths(n).map(p => meshCache.get(p)));
         await new Promise(r => setTimeout(r, 40));
+        await texturesReady(g);
         a.thumb = shoot(g) || 'none';
       } catch (e) { console.warn('thumbnail', a.id, e); a.thumb = 'none'; }
       DB.put('assets', a.id, a).catch(() => {});
